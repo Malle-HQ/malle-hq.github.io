@@ -45,7 +45,7 @@ async function body(request: Request): Promise<Json> {
 async function currentProfile(request: Request, env: Env) {
   const auth = request.headers.get('authorization')
   if (!auth?.startsWith('Bearer ')) return null
-  return env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key FROM profiles WHERE session_hash = ? AND trip_id = ?')
+  return env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, visible FROM profiles WHERE session_hash = ? AND trip_id = ?')
     .bind(await hash(auth.slice(7)), TRIP_ID).first()
 }
 
@@ -68,7 +68,7 @@ async function writeTrip(env: Env, content: Json) {
 async function state(request: Request, env: Env) {
   const content = await readTrip(env)
   const profile = await currentProfile(request, env)
-  const profiles = await env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key FROM profiles WHERE trip_id = ? ORDER BY created_at').bind(TRIP_ID).all()
+  const profiles = await env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key FROM profiles WHERE trip_id = ? AND visible = 1 ORDER BY created_at').bind(TRIP_ID).all()
   const participants = profiles.results.map(item => ({
     id: item.id,
     name: `${item.prefix || ''}${item.name}`,
@@ -140,8 +140,8 @@ async function updateProfile(request: Request, env: Env) {
   if (!profile) return json(env, { error: 'Bitte erneut anmelden.' }, 401)
   const data = await body(request)
   if (typeof data.name !== 'string' || !data.name.trim()) return json(env, { error: 'Der Name fehlt.' }, 400)
-  await env.DB.prepare('UPDATE profiles SET name = ?, prefix = ?, nickname = ?, status = ?, color = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-    .bind(data.name.trim().slice(0, 60), typeof data.prefix === 'string' ? data.prefix.slice(0, 30) : '', typeof data.nickname === 'string' ? data.nickname.slice(0, 80) : profile.nickname, ['Dabei','Vielleicht','Abgesagt'].includes(String(data.status)) ? data.status : profile.status, typeof data.color === 'string' ? data.color : profile.color, profile.id).run()
+  await env.DB.prepare('UPDATE profiles SET name = ?, prefix = ?, nickname = ?, status = ?, color = ?, visible = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+    .bind(data.name.trim().slice(0, 60), typeof data.prefix === 'string' ? data.prefix.slice(0, 30) : '', typeof data.nickname === 'string' ? data.nickname.slice(0, 80) : profile.nickname, ['Dabei','Vielleicht','Abgesagt'].includes(String(data.status)) ? data.status : profile.status, typeof data.color === 'string' ? data.color : profile.color, data.visible === false ? 0 : 1, profile.id).run()
   return json(env, { ok: true })
 }
 
@@ -169,6 +169,72 @@ async function avatar(pathname: string, env: Env) {
   return new Response(object.body, { headers })
 }
 
+async function extras(request: Request, env: Env) {
+  if (!await requireProfile(request, env)) return json(env, { chat: [], highlights: [], pastTrips: [], authenticated: false })
+  const [chat, highlights, pastTrips] = await Promise.all([
+    env.DB.prepare(`SELECT m.id, m.message, m.created_at, p.name, p.prefix, p.color
+      FROM chat_messages m JOIN profiles p ON p.id = m.profile_id WHERE m.trip_id = ? ORDER BY m.created_at DESC LIMIT 100`).bind(TRIP_ID).all(),
+    env.DB.prepare(`SELECT h.id, h.title, h.created_at, p.name, p.prefix
+      FROM highlights h JOIN profiles p ON p.id = h.profile_id WHERE h.trip_id = ? ORDER BY h.created_at DESC LIMIT 100`).bind(TRIP_ID).all(),
+    env.DB.prepare('SELECT id, title, destination, start_date, end_date, note FROM past_trips ORDER BY start_date DESC').all(),
+  ])
+  return json(env, {
+    authenticated: true,
+    chat: chat.results.map(item => ({ ...item, author: `${item.prefix || ''}${item.name}` })),
+    highlights: highlights.results.map(item => ({ ...item, author: `${item.prefix || ''}${item.name}`, imageUrl: `/highlights/${item.id}` })),
+    pastTrips: pastTrips.results,
+  })
+}
+
+async function addChat(request: Request, env: Env) {
+  const profile = await requireProfile(request, env)
+  if (!profile) return json(env, { error: 'Bitte zuerst beitreten oder anmelden.' }, 401)
+  const data = await body(request)
+  if (typeof data.message !== 'string' || !data.message.trim()) return json(env, { error: 'Die Nachricht ist leer.' }, 400)
+  await env.DB.prepare('INSERT INTO chat_messages (id, trip_id, profile_id, message) VALUES (?, ?, ?, ?)')
+    .bind(crypto.randomUUID(), TRIP_ID, profile.id, data.message.trim().slice(0, 1000)).run()
+  return json(env, { ok: true }, 201)
+}
+
+async function addHighlight(request: Request, env: Env) {
+  const profile = await requireProfile(request, env)
+  if (!profile) return json(env, { error: 'Bitte zuerst beitreten oder anmelden.' }, 401)
+  const url = new URL(request.url)
+  const title = (url.searchParams.get('title') || '').trim().slice(0, 100)
+  const type = request.headers.get('content-type') || ''
+  const length = Number(request.headers.get('content-length') || 0)
+  if (!title) return json(env, { error: 'Bitte einen Titel eingeben.' }, 400)
+  if (!['image/jpeg','image/png','image/webp'].includes(type) || length > 8_000_000) return json(env, { error: 'Bitte JPG, PNG oder WebP bis 8 MB wählen.' }, 400)
+  const id = crypto.randomUUID()
+  const key = `${TRIP_ID}/highlights/${id}`
+  await env.PROFILE_IMAGES.put(key, request.body, { httpMetadata: { contentType: type } })
+  await env.DB.prepare('INSERT INTO highlights (id, trip_id, profile_id, title, image_key) VALUES (?, ?, ?, ?, ?)')
+    .bind(id, TRIP_ID, profile.id, title).run()
+  return json(env, { ok: true }, 201)
+}
+
+async function highlightImage(pathname: string, env: Env) {
+  const id = pathname.split('/').pop()
+  const highlight = await env.DB.prepare('SELECT image_key FROM highlights WHERE id = ? AND trip_id = ?').bind(id, TRIP_ID).first<{ image_key: string }>()
+  if (!highlight) return new Response('Not found', { status: 404, headers: cors(env) })
+  const object = await env.PROFILE_IMAGES.get(highlight.image_key)
+  if (!object) return new Response('Not found', { status: 404, headers: cors(env) })
+  const headers = new Headers(cors(env))
+  object.writeHttpMetadata(headers)
+  headers.set('Cache-Control', 'public, max-age=300')
+  return new Response(object.body, { headers })
+}
+
+async function addPastTrip(request: Request, env: Env) {
+  const profile = await requireProfile(request, env, true)
+  if (!profile) return json(env, { error: 'Nur der Harte Kern darf Reisen archivieren.' }, 403)
+  const data = await body(request)
+  if (![data.title, data.destination, data.startDate, data.endDate].every(value => typeof value === 'string' && value.trim())) return json(env, { error: 'Bitte alle Reisedaten ausfüllen.' }, 400)
+  await env.DB.prepare('INSERT INTO past_trips (id, title, destination, start_date, end_date, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(crypto.randomUUID(), String(data.title).slice(0, 100), String(data.destination).slice(0, 100), data.startDate, data.endDate, typeof data.note === 'string' ? data.note.slice(0, 1000) : '', profile.id).run()
+  return json(env, { ok: true }, 201)
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(env) })
@@ -182,6 +248,11 @@ export default {
       if (request.method === 'PATCH' && pathname === '/profile') return updateProfile(request, env)
       if (request.method === 'PUT' && pathname === '/profile/avatar') return uploadAvatar(request, env)
       if (request.method === 'GET' && pathname.startsWith('/avatars/')) return avatar(pathname, env)
+      if (request.method === 'GET' && pathname === '/extras') return extras(request, env)
+      if (request.method === 'POST' && pathname === '/chat') return addChat(request, env)
+      if (request.method === 'POST' && pathname === '/highlights') return addHighlight(request, env)
+      if (request.method === 'GET' && pathname.startsWith('/highlights/')) return highlightImage(pathname, env)
+      if (request.method === 'POST' && pathname === '/past-trips') return addPastTrip(request, env)
       return json(env, { error: 'Nicht gefunden.' }, 404)
     } catch (error) {
       console.error(JSON.stringify({ event: 'request_failed', pathname, message: error instanceof Error ? error.message : 'unknown' }))
