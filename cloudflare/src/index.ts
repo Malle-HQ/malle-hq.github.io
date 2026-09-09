@@ -84,6 +84,7 @@ async function state(request: Request, env: Env) {
 async function login(request: Request, env: RuntimeEnv) {
   const data = await body(request)
   if (typeof data.password !== 'string' || !await secureEqual(data.password, env.ADMIN_PASSWORD)) return json(env, { error: 'Das Passwort stimmt noch nicht.' }, 401)
+  if (!await readTrip(env)) await writeTrip(env, {})
   const session = token()
   await env.DB.prepare(`INSERT INTO profiles (id, trip_id, name, prefix, nickname, role, status, color, session_hash)
     VALUES ('owner', ?, 'Malle-Fan', '', 'Reiseleitung', 'Harter Kern', 'Dabei', '#8f5bd7', ?)
