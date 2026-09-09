@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#ff6b35"/>
+  <circle cx="408" cy="98" r="78" fill="#ffc93c"/>
+  <path d="M0 390c94-70 185-72 273-13 80 54 159 50 239-13v148H0z" fill="#17324d"/>
+  <text x="256" y="302" text-anchor="middle" fill="#fff8ea" font-family="Arial,sans-serif" font-size="142" font-weight="900">MHQ</text>
+</svg>

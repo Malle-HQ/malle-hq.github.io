@@ -1,0 +1,5 @@
+:root { font-family: 'DM Sans', system-ui, sans-serif; color: #17324d; background: #fff8ea; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+html { scroll-behavior: smooth; background: #f2eadc; }
+body { margin: 0; min-width: 320px; min-height: 100svh; background: #fff8ea; }
+button { font-family: inherit; }
+#root { min-height: 100svh; }

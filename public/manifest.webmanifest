@@ -1,0 +1,14 @@
+{
+  "name": "Malle HQ",
+  "short_name": "Malle HQ",
+  "description": "Alle Infos, Termine und Abstimmungen für die Malle-Crew.",
+  "start_url": "/malle-hq/",
+  "scope": "/malle-hq/",
+  "display": "standalone",
+  "background_color": "#fff8ea",
+  "theme_color": "#ff6b35",
+  "lang": "de",
+  "icons": [
+    { "src": "app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

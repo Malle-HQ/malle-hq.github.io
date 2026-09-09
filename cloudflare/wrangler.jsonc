@@ -1,0 +1,25 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "malle-hq-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "malle-hq",
+      "database_id": "7b2cb001-875e-4d19-a40a-db63f979d857"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "PROFILE_IMAGES",
+      "bucket_name": "malle-hq-profiles"
+    }
+  ]
+}
