@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS invitations (
   trip_id TEXT NOT NULL,
   code_hash TEXT NOT NULL UNIQUE,
   recipient TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'Crewmitglied',
   used_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE
@@ -75,4 +76,3 @@ CREATE INDEX IF NOT EXISTS idx_profiles_trip ON profiles(trip_id);
 CREATE INDEX IF NOT EXISTS idx_invitations_trip ON invitations(trip_id);
 CREATE INDEX IF NOT EXISTS idx_locations_trip ON location_options(trip_id);
 CREATE INDEX IF NOT EXISTS idx_live_events_trip_start ON live_events(trip_id, starts_at);
-

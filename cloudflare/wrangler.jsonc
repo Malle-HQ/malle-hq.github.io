@@ -1,13 +1,17 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
   "name": "malle-hq-api",
-  "main": "src/index.js",
+  "main": "src/index.ts",
   "compatibility_date": "2026-09-09",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "preview_urls": false,
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
+  },
+  "vars": {
+    "WEB_ORIGIN": "https://roniiminimal-ux.github.io"
   },
   "d1_databases": [
     {
