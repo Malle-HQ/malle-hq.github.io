@@ -18,6 +18,9 @@ CREATE TABLE IF NOT EXISTS profiles (
   color TEXT NOT NULL DEFAULT '#8f5bd7',
   avatar_key TEXT,
   visible INTEGER NOT NULL DEFAULT 1,
+  login_name TEXT,
+  password_hash TEXT,
+  password_salt TEXT,
   session_hash TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -74,6 +77,7 @@ CREATE TABLE IF NOT EXISTS live_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_profiles_trip ON profiles(trip_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_login_name ON profiles(login_name COLLATE NOCASE) WHERE login_name IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_invitations_trip ON invitations(trip_id);
 CREATE INDEX IF NOT EXISTS idx_locations_trip ON location_options(trip_id);
 CREATE INDEX IF NOT EXISTS idx_live_events_trip_start ON live_events(trip_id, starts_at);

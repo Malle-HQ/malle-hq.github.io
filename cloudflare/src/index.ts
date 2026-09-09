@@ -36,6 +36,28 @@ function token() {
   return [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
+function bytesToHex(bytes: Uint8Array) {
+  return [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function hexToBytes(value: string) {
+  return new Uint8Array(value.match(/.{2}/g)?.map(byte => Number.parseInt(byte, 16)) || [])
+}
+
+async function passwordDigest(password: string, saltHex: string) {
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits'])
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: hexToBytes(saltHex), iterations: 100_000 }, material, 256)
+  return bytesToHex(new Uint8Array(bits))
+}
+
+function validLoginName(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9._-]{3,30}$/.test(value.trim())
+}
+
+function validPassword(value: unknown): value is string {
+  return typeof value === 'string' && value.length >= 8 && value.length <= 100
+}
+
 async function body(request: Request): Promise<Json> {
   const length = Number(request.headers.get('content-length') || 0)
   if (length > 1_000_000) throw new Error('PAYLOAD_TOO_LARGE')
@@ -78,19 +100,40 @@ async function state(request: Request, env: Env) {
     color: item.color,
     avatarUrl: item.avatar_key ? `/avatars/${item.id}` : null,
   }))
-  return json(env, { content, participants, profile, isAdmin: profile?.role === 'Harter Kern' })
+  const owner = await env.DB.prepare("SELECT password_hash FROM profiles WHERE id = 'owner'").first<{ password_hash: string | null }>()
+  return json(env, { content, participants, profile, isAdmin: profile?.role === 'Harter Kern', setupRequired: !owner?.password_hash })
 }
 
 async function login(request: Request, env: RuntimeEnv) {
   const data = await body(request)
-  if (typeof data.password !== 'string' || !await secureEqual(data.password, env.ADMIN_PASSWORD)) return json(env, { error: 'Das Passwort stimmt noch nicht.' }, 401)
-  if (!await readTrip(env)) await writeTrip(env, {})
+  if (!validLoginName(data.loginName) || !validPassword(data.password)) return json(env, { error: 'Login-Name oder Passwort stimmen nicht.' }, 401)
+  const profile = await env.DB.prepare('SELECT id, role, password_hash, password_salt FROM profiles WHERE login_name = ? COLLATE NOCASE AND trip_id = ?')
+    .bind(data.loginName.trim(), TRIP_ID).first<{ id: string; role: string; password_hash: string | null; password_salt: string | null }>()
+  if (!profile?.password_hash || !profile.password_salt) return json(env, { error: 'Login-Name oder Passwort stimmen nicht.' }, 401)
+  const candidate = await passwordDigest(data.password, profile.password_salt)
+  if (!await secureEqual(candidate, profile.password_hash)) return json(env, { error: 'Login-Name oder Passwort stimmen nicht.' }, 401)
   const session = token()
-  await env.DB.prepare(`INSERT INTO profiles (id, trip_id, name, prefix, nickname, role, status, color, session_hash)
-    VALUES ('owner', ?, 'Malle-Fan', '', 'Reiseleitung', 'Harter Kern', 'Dabei', '#8f5bd7', ?)
-    ON CONFLICT(id) DO UPDATE SET session_hash = excluded.session_hash, role = 'Harter Kern', updated_at = CURRENT_TIMESTAMP`)
-    .bind(TRIP_ID, await hash(session)).run()
-  return json(env, { token: session, role: 'Harter Kern' })
+  await env.DB.prepare('UPDATE profiles SET session_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(await hash(session), profile.id).run()
+  return json(env, { token: session, role: profile.role })
+}
+
+async function setupOwner(request: Request, env: RuntimeEnv) {
+  const data = await body(request)
+  if (!validLoginName(data.loginName)) return json(env, { error: 'Der Login-Name braucht 3–30 Zeichen: Buchstaben, Zahlen, Punkt, Minus oder Unterstrich.' }, 400)
+  if (!validPassword(data.password)) return json(env, { error: 'Das Passwort muss mindestens 8 Zeichen lang sein.' }, 400)
+  if (typeof data.setupCode !== 'string' || !await secureEqual(data.setupCode, env.ADMIN_PASSWORD)) return json(env, { error: 'Der einmalige Einrichtungscode stimmt nicht.' }, 401)
+  const existing = await env.DB.prepare("SELECT password_hash FROM profiles WHERE id = 'owner'").first<{ password_hash: string | null }>()
+  if (existing?.password_hash) return json(env, { error: 'Der erste Zugang wurde bereits eingerichtet.' }, 409)
+  if (!await readTrip(env)) await writeTrip(env, {})
+  const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
+  const passwordHash = await passwordDigest(data.password, salt)
+  const session = token()
+  const name = typeof data.displayName === 'string' && data.displayName.trim() ? data.displayName.trim().slice(0, 60) : data.loginName.trim()
+  await env.DB.prepare(`INSERT INTO profiles (id, trip_id, name, prefix, nickname, role, status, color, visible, login_name, password_hash, password_salt, session_hash)
+    VALUES ('owner', ?, ?, '', 'Entwicklung & Reiseleitung', 'Harter Kern', 'Dabei', '#8f5bd7', 0, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET name = excluded.name, visible = 0, login_name = excluded.login_name, password_hash = excluded.password_hash, password_salt = excluded.password_salt, session_hash = excluded.session_hash, role = 'Harter Kern', updated_at = CURRENT_TIMESTAMP`)
+    .bind(TRIP_ID, name, data.loginName.trim(), passwordHash, salt, await hash(session)).run()
+  return json(env, { token: session, role: 'Harter Kern' }, 201)
 }
 
 async function saveState(request: Request, env: Env) {
@@ -122,14 +165,20 @@ async function createInvitation(request: Request, env: Env) {
 async function acceptInvitation(request: Request, env: Env) {
   const data = await body(request)
   if (typeof data.code !== 'string' || typeof data.name !== 'string' || !data.name.trim()) return json(env, { error: 'Code und Name fehlen.' }, 400)
+  if (!validLoginName(data.loginName)) return json(env, { error: 'Der Login-Name braucht 3–30 Zeichen: Buchstaben, Zahlen, Punkt, Minus oder Unterstrich.' }, 400)
+  if (!validPassword(data.password)) return json(env, { error: 'Das Passwort muss mindestens 8 Zeichen lang sein.' }, 400)
+  const nameTaken = await env.DB.prepare('SELECT id FROM profiles WHERE login_name = ? COLLATE NOCASE').bind(data.loginName.trim()).first()
+  if (nameTaken) return json(env, { error: 'Dieser Login-Name ist schon vergeben.' }, 409)
   const invitation = await env.DB.prepare('SELECT id, recipient, role, used_at FROM invitations WHERE code_hash = ? AND trip_id = ?')
     .bind(await hash(data.code.trim().toUpperCase()), TRIP_ID).first()
   if (!invitation || invitation.used_at) return json(env, { error: 'Dieser Code ist ungültig oder wurde schon verwendet.' }, 400)
   const session = token()
   const profileId = crypto.randomUUID()
+  const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
+  const passwordHash = await passwordDigest(data.password, salt)
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO profiles (id, trip_id, name, prefix, nickname, role, status, color, session_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(profileId, TRIP_ID, data.name.trim().slice(0, 60), typeof data.prefix === 'string' ? data.prefix.slice(0, 30) : '', typeof data.nickname === 'string' ? data.nickname.slice(0, 80) : '', invitation.role, ['Dabei','Vielleicht','Abgesagt'].includes(String(data.status)) ? data.status : 'Dabei', typeof data.color === 'string' ? data.color : '#8f5bd7', await hash(session)),
+    env.DB.prepare(`INSERT INTO profiles (id, trip_id, name, prefix, nickname, role, status, color, login_name, password_hash, password_salt, session_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(profileId, TRIP_ID, data.name.trim().slice(0, 60), typeof data.prefix === 'string' ? data.prefix.slice(0, 30) : '', typeof data.nickname === 'string' ? data.nickname.slice(0, 80) : '', invitation.role, ['Dabei','Vielleicht','Abgesagt'].includes(String(data.status)) ? data.status : 'Dabei', typeof data.color === 'string' ? data.color : '#8f5bd7', data.loginName.trim(), passwordHash, salt, await hash(session)),
     env.DB.prepare('UPDATE invitations SET used_at = CURRENT_TIMESTAMP WHERE id = ?').bind(invitation.id),
   ])
   return json(env, { token: session, role: invitation.role, profileId })
@@ -242,6 +291,7 @@ export default {
     try {
       if (request.method === 'GET' && pathname === '/state') return state(request, env)
       if (request.method === 'POST' && pathname === '/login') return login(request, env as RuntimeEnv)
+      if (request.method === 'POST' && pathname === '/setup-owner') return setupOwner(request, env as RuntimeEnv)
       if (request.method === 'PUT' && pathname === '/state') return saveState(request, env)
       if (request.method === 'POST' && pathname === '/invitations') return createInvitation(request, env)
       if (request.method === 'POST' && pathname === '/invitations/accept') return acceptInvitation(request, env)
