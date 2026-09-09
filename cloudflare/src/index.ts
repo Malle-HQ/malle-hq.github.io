@@ -1,9 +1,50 @@
 type Json = Record<string, unknown>
-type RuntimeEnv = Env & { ADMIN_PASSWORD: string }
+type RuntimeEnv = Env & { ADMIN_PASSWORD: string; ONESIGNAL_APP_ID?: string; ONESIGNAL_API_KEY?: string }
 
 const TRIP_ID = 'malle-2027'
 const TRIP_SLUG = 'malle-2027'
 const editableByCrew = ['availabilities', 'locationOptions', 'liveEvents']
+const travelKeys = ['title', 'destination', 'startDate', 'endDate', 'accommodation', 'accommodationDetails', 'travel', 'travelDetails', 'meetingPoint', 'meetingPointDetails', 'importantInfo', 'importantInfoDetails', 'planningMeeting', 'notes']
+
+const pushLines = {
+  chat: [
+    (name: string) => `Bierbert funkt dazwischen: ${name} hat im Chat was zu melden 🍻`,
+    (name: string) => `Kurze Thekenmeldung: ${name} hat in den Chat geschrieben 💬`,
+    (name: string) => `Bierbert ruft: Nachricht von ${name}! Rein da und nachlesen 🌴`,
+  ],
+  highlight: [
+    (name: string, detail: string) => `Beweismaterial eingetroffen! ${name} hat „${detail}“ hochgeladen 📸`,
+    (name: string, detail: string) => `Bierbert meldet ein neues Highlight von ${name}: „${detail}“ 🌞`,
+    (name: string, detail: string) => `Fotoalarm! ${name} sorgt mit „${detail}“ für Gesprächsstoff 🍹`,
+  ],
+  travel: [
+    () => 'Bierbert meldet Planänderung! Schau lieber kurz ins Malle HQ ✈️',
+    () => 'Achtung, Crew: Bei den Reisedaten hat sich etwas getan 🌴',
+    () => 'Bierbert hat neue Reiseinfos erspäht. Einmal nachsehen, bitte! 🍻',
+  ],
+}
+
+function randomLine(lines: Array<(...values: string[]) => string>, ...values: string[]) {
+  const random = crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32
+  return lines[Math.floor(random * lines.length)](...values)
+}
+
+async function sendPush(env: RuntimeEnv, kind: keyof typeof pushLines, actorId: string, actorName: string, detail = '') {
+  if (!env.ONESIGNAL_APP_ID || !env.ONESIGNAL_API_KEY) return
+  const content = randomLine(pushLines[kind], actorName, detail)
+  const response = await fetch('https://api.onesignal.com/notifications', {
+    method: 'POST',
+    headers: { 'Authorization': `Key ${env.ONESIGNAL_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      app_id: env.ONESIGNAL_APP_ID,
+      headings: { de: 'Bierbert meldet sich 🍻', en: 'Bierbert meldet sich 🍻' },
+      contents: { de: content, en: content },
+      filters: [{ field: 'tag', key: 'profile_id', relation: '!=', value: actorId }],
+      url: kind === 'chat' ? `${env.WEB_ORIGIN}/#chat` : kind === 'highlight' ? `${env.WEB_ORIGIN}/#highlights` : env.WEB_ORIGIN,
+    }),
+  })
+  if (!response.ok) console.error(JSON.stringify({ event: 'push_failed', kind, status: response.status, body: await response.text() }))
+}
 
 function cors(env: Env) {
   return {
@@ -136,7 +177,7 @@ async function setupOwner(request: Request, env: RuntimeEnv) {
   return json(env, { token: session, role: 'Harter Kern' }, 201)
 }
 
-async function saveState(request: Request, env: Env) {
+async function saveState(request: Request, env: RuntimeEnv, ctx: ExecutionContext) {
   const profile = await requireProfile(request, env)
   if (!profile) return json(env, { error: 'Bitte erneut anmelden.' }, 401)
   const incoming = await body(request)
@@ -148,6 +189,8 @@ async function saveState(request: Request, env: Env) {
   delete next.invitations
   delete next.myProfile
   await writeTrip(env, next)
+  const changed = profile.role === 'Harter Kern' && travelKeys.some(key => JSON.stringify(current[key]) !== JSON.stringify(next[key]))
+  if (changed) ctx.waitUntil(sendPush(env, 'travel', String(profile.id), `${profile.prefix || ''}${profile.name}`))
   return json(env, { ok: true, content: next })
 }
 
@@ -235,17 +278,18 @@ async function extras(request: Request, env: Env) {
   })
 }
 
-async function addChat(request: Request, env: Env) {
+async function addChat(request: Request, env: RuntimeEnv, ctx: ExecutionContext) {
   const profile = await requireProfile(request, env)
   if (!profile) return json(env, { error: 'Bitte zuerst beitreten oder anmelden.' }, 401)
   const data = await body(request)
   if (typeof data.message !== 'string' || !data.message.trim()) return json(env, { error: 'Die Nachricht ist leer.' }, 400)
   await env.DB.prepare('INSERT INTO chat_messages (id, trip_id, profile_id, message) VALUES (?, ?, ?, ?)')
     .bind(crypto.randomUUID(), TRIP_ID, profile.id, data.message.trim().slice(0, 1000)).run()
+  ctx.waitUntil(sendPush(env, 'chat', String(profile.id), `${profile.prefix || ''}${profile.name}`))
   return json(env, { ok: true }, 201)
 }
 
-async function addHighlight(request: Request, env: Env) {
+async function addHighlight(request: Request, env: RuntimeEnv, ctx: ExecutionContext) {
   const profile = await requireProfile(request, env)
   if (!profile) return json(env, { error: 'Bitte zuerst beitreten oder anmelden.' }, 401)
   const url = new URL(request.url)
@@ -259,6 +303,7 @@ async function addHighlight(request: Request, env: Env) {
   await env.PROFILE_IMAGES.put(key, request.body, { httpMetadata: { contentType: type } })
   await env.DB.prepare('INSERT INTO highlights (id, trip_id, profile_id, title, image_key) VALUES (?, ?, ?, ?, ?)')
     .bind(id, TRIP_ID, profile.id, title).run()
+  ctx.waitUntil(sendPush(env, 'highlight', String(profile.id), `${profile.prefix || ''}${profile.name}`, title))
   return json(env, { ok: true }, 201)
 }
 
@@ -285,22 +330,22 @@ async function addPastTrip(request: Request, env: Env) {
 }
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(env) })
     const { pathname } = new URL(request.url)
     try {
       if (request.method === 'GET' && pathname === '/state') return state(request, env)
       if (request.method === 'POST' && pathname === '/login') return login(request, env as RuntimeEnv)
       if (request.method === 'POST' && pathname === '/setup-owner') return setupOwner(request, env as RuntimeEnv)
-      if (request.method === 'PUT' && pathname === '/state') return saveState(request, env)
+      if (request.method === 'PUT' && pathname === '/state') return saveState(request, env as RuntimeEnv, ctx)
       if (request.method === 'POST' && pathname === '/invitations') return createInvitation(request, env)
       if (request.method === 'POST' && pathname === '/invitations/accept') return acceptInvitation(request, env)
       if (request.method === 'PATCH' && pathname === '/profile') return updateProfile(request, env)
       if (request.method === 'PUT' && pathname === '/profile/avatar') return uploadAvatar(request, env)
       if (request.method === 'GET' && pathname.startsWith('/avatars/')) return avatar(pathname, env)
       if (request.method === 'GET' && pathname === '/extras') return extras(request, env)
-      if (request.method === 'POST' && pathname === '/chat') return addChat(request, env)
-      if (request.method === 'POST' && pathname === '/highlights') return addHighlight(request, env)
+      if (request.method === 'POST' && pathname === '/chat') return addChat(request, env as RuntimeEnv, ctx)
+      if (request.method === 'POST' && pathname === '/highlights') return addHighlight(request, env as RuntimeEnv, ctx)
       if (request.method === 'GET' && pathname.startsWith('/highlights/')) return highlightImage(pathname, env)
       if (request.method === 'POST' && pathname === '/past-trips') return addPastTrip(request, env)
       return json(env, { error: 'Nicht gefunden.' }, 404)

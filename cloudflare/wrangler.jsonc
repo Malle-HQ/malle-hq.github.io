@@ -11,7 +11,8 @@
     "head_sampling_rate": 1
   },
   "vars": {
-    "WEB_ORIGIN": "https://malle-hq.github.io"
+    "WEB_ORIGIN": "https://malle-hq.github.io",
+    "ONESIGNAL_APP_ID": "829b9e2b-d737-4e02-943d-7b9c6b29c465"
   },
   "d1_databases": [
     {
