@@ -1,4 +1,4 @@
-const CACHE = 'malle-hq-v5'
+const CACHE = 'malle-hq-v6'
 const APP_SHELL = ['./', './manifest.webmanifest', './app-icon.svg']
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(APP_SHELL))))
 self.addEventListener('activate', event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key))))))

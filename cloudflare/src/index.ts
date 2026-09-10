@@ -4,7 +4,7 @@ type RuntimeEnv = Env & { ADMIN_PASSWORD: string; ONESIGNAL_APP_ID?: string; ONE
 const TRIP_ID = 'malle-2027'
 const TRIP_SLUG = 'malle-2027'
 const editableByCrew = ['availabilities', 'locationOptions', 'liveEvents']
-const travelKeys = ['title', 'destination', 'startDate', 'endDate', 'accommodation', 'accommodationDetails', 'travel', 'travelDetails', 'meetingPoint', 'meetingPointDetails', 'importantInfo', 'importantInfoDetails', 'planningMeeting', 'notes']
+const travelKeys = ['title', 'destination', 'startDate', 'endDate', 'accommodation', 'accommodationDetails', 'travel', 'travelDetails', 'flightPlan', 'meetingPoint', 'meetingPointDetails', 'importantInfo', 'importantInfoDetails', 'planningMeeting', 'notes']
 
 const pushLines = {
   chat: [
