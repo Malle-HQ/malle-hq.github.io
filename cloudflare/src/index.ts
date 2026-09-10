@@ -308,6 +308,15 @@ async function createInvitation(request: Request, env: Env) {
   return json(env, { code, recipient, role })
 }
 
+async function checkInvitation(request: Request, env: Env) {
+  const data = await body(request)
+  if (typeof data.code !== 'string') return json(env, { error: 'Bitte gib einen Einladungscode ein.' }, 400)
+  const invitation = await env.DB.prepare('SELECT recipient, role, used_at FROM invitations WHERE code_hash = ? AND trip_id = ?')
+    .bind(await hash(data.code.trim().toUpperCase()), TRIP_ID).first<{ recipient: string; role: string; used_at: string | null }>()
+  if (!invitation || invitation.used_at) return json(env, { error: 'Dieser Code ist ungültig oder wurde schon verwendet.' }, 400)
+  return json(env, { valid: true, recipient: invitation.recipient, role: invitation.role })
+}
+
 async function acceptInvitation(request: Request, env: Env) {
   const data = await body(request)
   if (typeof data.code !== 'string' || typeof data.name !== 'string' || !data.name.trim()) return json(env, { error: 'Code und Name fehlen.' }, 400)
@@ -529,6 +538,7 @@ export default {
       if (request.method === 'POST' && pathname === '/setup-owner') return setupOwner(request, env as RuntimeEnv)
       if (request.method === 'PUT' && pathname === '/state') return saveState(request, env as RuntimeEnv, ctx)
       if (request.method === 'POST' && pathname === '/invitations') return createInvitation(request, env)
+      if (request.method === 'POST' && pathname === '/invitations/check') return checkInvitation(request, env)
       if (request.method === 'POST' && pathname === '/invitations/accept') return acceptInvitation(request, env)
       if (request.method === 'PATCH' && pathname === '/profile') return updateProfile(request, env)
       if (request.method === 'POST' && pathname === '/achievements') return addAchievement(request, env)
