@@ -1,8 +1,13 @@
+import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from '@simplewebauthn/server'
+import type { AuthenticationResponseJSON, Base64URLString, RegistrationResponseJSON, WebAuthnCredential } from '@simplewebauthn/server'
+
 type Json = Record<string, unknown>
 type RuntimeEnv = Env & { ADMIN_PASSWORD: string; ONESIGNAL_APP_ID?: string; ONESIGNAL_API_KEY?: string }
 
 const TRIP_ID = 'malle-2027'
 const TRIP_SLUG = 'malle-2027'
+const RP_ID = 'malle-hq.github.io'
+const EXPECTED_ORIGIN = 'https://malle-hq.github.io'
 const editableByCrew = ['availabilities', 'locationOptions', 'liveEvents']
 const travelKeys = ['title', 'destination', 'startDate', 'endDate', 'accommodation', 'accommodationDetails', 'travel', 'travelDetails', 'flightPlan', 'meetingPoint', 'meetingPointDetails', 'importantInfo', 'importantInfoDetails', 'planningMeeting', 'notes']
 
@@ -86,6 +91,18 @@ function hexToBytes(value: string) {
   return new Uint8Array(value.match(/.{2}/g)?.map(byte => Number.parseInt(byte, 16)) || [])
 }
 
+function bytesToBase64Url(bytes: Uint8Array) {
+  let value = ''
+  for (const byte of bytes) value += String.fromCharCode(byte)
+  return btoa(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function base64UrlToBytes(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const decoded = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='))
+  return Uint8Array.from(decoded, character => character.charCodeAt(0))
+}
+
 async function passwordDigest(password: string, saltHex: string) {
   const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits'])
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: hexToBytes(saltHex), iterations: 100_000 }, material, 256)
@@ -109,8 +126,9 @@ async function body(request: Request): Promise<Json> {
 async function currentProfile(request: Request, env: Env) {
   const auth = request.headers.get('authorization')
   if (!auth?.startsWith('Bearer ')) return null
-  return env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, visible, flies FROM profiles WHERE session_hash = ? AND trip_id = ?')
-    .bind(await hash(auth.slice(7)), TRIP_ID).first()
+  const sessionHash = await hash(auth.slice(7))
+  return env.DB.prepare('SELECT DISTINCT p.id, p.name, p.prefix, p.nickname, p.role, p.status, p.color, p.avatar_key, p.visible, p.flies FROM profiles p LEFT JOIN sessions s ON s.profile_id = p.id WHERE (p.session_hash = ? OR s.session_hash = ?) AND p.trip_id = ?')
+    .bind(sessionHash, sessionHash, TRIP_ID).first()
 }
 
 async function requireProfile(request: Request, env: Env, adminOnly = false) {
@@ -132,7 +150,10 @@ async function writeTrip(env: Env, content: Json) {
 async function state(request: Request, env: Env) {
   const content = await readTrip(env)
   const profile = await currentProfile(request, env)
-  const profiles = await env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, flies FROM profiles WHERE trip_id = ? AND visible = 1 ORDER BY created_at').bind(TRIP_ID).all()
+  const [profiles, achievements] = await Promise.all([
+    env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, flies FROM profiles WHERE trip_id = ? AND visible = 1 ORDER BY created_at').bind(TRIP_ID).all(),
+    env.DB.prepare('SELECT a.id, a.profile_id, a.title, a.icon FROM achievements a JOIN profiles p ON p.id = a.profile_id WHERE p.trip_id = ? ORDER BY a.created_at DESC').bind(TRIP_ID).all(),
+  ])
   const participants = profiles.results.map(item => ({
     id: item.id,
     name: `${item.prefix || ''}${item.name}`,
@@ -142,6 +163,7 @@ async function state(request: Request, env: Env) {
     color: item.color,
     avatarUrl: item.avatar_key ? `/avatars/${item.id}` : null,
     flies: Boolean(item.flies),
+    achievements: achievements.results.filter(badge => badge.profile_id === item.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon })),
   }))
   const owner = await env.DB.prepare("SELECT password_hash FROM profiles WHERE id = 'owner'").first<{ password_hash: string | null }>()
   return json(env, { content, participants, profile, isAdmin: profile?.role === 'Harter Kern', setupRequired: !owner?.password_hash })
@@ -156,8 +178,19 @@ async function login(request: Request, env: RuntimeEnv) {
   const candidate = await passwordDigest(data.password, profile.password_salt)
   if (!await secureEqual(candidate, profile.password_hash)) return json(env, { error: 'Login-Name oder Passwort stimmen nicht.' }, 401)
   const session = token()
-  await env.DB.prepare('UPDATE profiles SET session_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(await hash(session), profile.id).run()
+  await env.DB.prepare('INSERT INTO sessions (session_hash, profile_id) VALUES (?, ?)').bind(await hash(session), profile.id).run()
   return json(env, { token: session, role: profile.role })
+}
+
+async function logout(request: Request, env: Env) {
+  const auth = request.headers.get('authorization')
+  if (!auth?.startsWith('Bearer ')) return json(env, { ok: true })
+  const sessionHash = await hash(auth.slice(7))
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM sessions WHERE session_hash = ?').bind(sessionHash),
+    env.DB.prepare('UPDATE profiles SET session_hash = ? WHERE session_hash = ?').bind(`logged-out-${crypto.randomUUID()}`, sessionHash),
+  ])
+  return json(env, { ok: true })
 }
 
 async function setupOwner(request: Request, env: RuntimeEnv) {
@@ -280,6 +313,84 @@ async function extras(request: Request, env: Env) {
   })
 }
 
+async function passkeyRegistrationOptions(request: Request, env: Env) {
+  const profile = await requireProfile(request, env)
+  if (!profile) return json(env, { error: 'Bitte zuerst anmelden.' }, 401)
+  const credentials = await env.DB.prepare('SELECT id, transports FROM passkey_credentials WHERE profile_id = ?').bind(profile.id).all()
+  const options = await generateRegistrationOptions({
+    rpName: 'Malle HQ', rpID: RP_ID, userID: new TextEncoder().encode(String(profile.id)), userName: String(profile.name), userDisplayName: `${profile.prefix || ''}${profile.name}`,
+    attestationType: 'none', authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
+    excludeCredentials: credentials.results.map(item => ({ id: String(item.id) as Base64URLString, transports: JSON.parse(String(item.transports || '[]')) })),
+  })
+  await env.DB.prepare('INSERT INTO passkey_challenges (profile_id, challenge, kind, expires_at) VALUES (?, ?, ?, ?) ON CONFLICT(profile_id) DO UPDATE SET challenge = excluded.challenge, kind = excluded.kind, expires_at = excluded.expires_at')
+    .bind(profile.id, options.challenge, 'register', Date.now() + 300_000).run()
+  return json(env, options)
+}
+
+async function passkeyRegistrationVerify(request: Request, env: Env) {
+  const profile = await requireProfile(request, env)
+  if (!profile) return json(env, { error: 'Bitte zuerst anmelden.' }, 401)
+  const challenge = await env.DB.prepare("SELECT challenge, expires_at FROM passkey_challenges WHERE profile_id = ? AND kind = 'register'").bind(profile.id).first<{ challenge: string; expires_at: number }>()
+  if (!challenge || challenge.expires_at < Date.now()) return json(env, { error: 'Die Passkey-Anfrage ist abgelaufen.' }, 400)
+  const data = await body(request)
+  const verification = await verifyRegistrationResponse({ response: data.response as unknown as RegistrationResponseJSON, expectedChallenge: challenge.challenge, expectedOrigin: EXPECTED_ORIGIN, expectedRPID: RP_ID, requireUserVerification: true })
+  if (!verification.verified) return json(env, { error: 'Der Passkey konnte nicht bestätigt werden.' }, 400)
+  const credential = verification.registrationInfo.credential
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO passkey_credentials (id, profile_id, public_key, counter, transports) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET public_key = excluded.public_key, counter = excluded.counter, transports = excluded.transports')
+      .bind(credential.id, profile.id, bytesToBase64Url(credential.publicKey), credential.counter, JSON.stringify(credential.transports || [])),
+    env.DB.prepare('DELETE FROM passkey_challenges WHERE profile_id = ?').bind(profile.id),
+  ])
+  return json(env, { ok: true })
+}
+
+async function passkeyAuthenticationOptions(request: Request, env: Env) {
+  const data = await body(request)
+  if (!validLoginName(data.loginName)) return json(env, { error: 'Bitte zuerst deinen Login-Namen eingeben.' }, 400)
+  const profile = await env.DB.prepare('SELECT id FROM profiles WHERE login_name = ? COLLATE NOCASE AND trip_id = ?').bind(data.loginName.trim(), TRIP_ID).first<{ id: string }>()
+  if (!profile) return json(env, { error: 'Für diesen Login wurde kein Passkey gefunden.' }, 404)
+  const credentials = await env.DB.prepare('SELECT id, transports FROM passkey_credentials WHERE profile_id = ?').bind(profile.id).all()
+  if (!credentials.results.length) return json(env, { error: 'Für diesen Login wurde noch kein Passkey eingerichtet.' }, 404)
+  const options = await generateAuthenticationOptions({ rpID: RP_ID, userVerification: 'required', allowCredentials: credentials.results.map(item => ({ id: String(item.id) as Base64URLString, transports: JSON.parse(String(item.transports || '[]')) })) })
+  await env.DB.prepare('INSERT INTO passkey_challenges (profile_id, challenge, kind, expires_at) VALUES (?, ?, ?, ?) ON CONFLICT(profile_id) DO UPDATE SET challenge = excluded.challenge, kind = excluded.kind, expires_at = excluded.expires_at')
+    .bind(profile.id, options.challenge, 'authenticate', Date.now() + 300_000).run()
+  return json(env, { options, profileId: profile.id })
+}
+
+async function passkeyAuthenticationVerify(request: Request, env: Env) {
+  const data = await body(request)
+  if (typeof data.profileId !== 'string') return json(env, { error: 'Passkey-Anmeldung ungültig.' }, 400)
+  const [profile, challenge] = await Promise.all([
+    env.DB.prepare('SELECT id, role FROM profiles WHERE id = ? AND trip_id = ?').bind(data.profileId, TRIP_ID).first<{ id: string; role: string }>(),
+    env.DB.prepare("SELECT challenge, expires_at FROM passkey_challenges WHERE profile_id = ? AND kind = 'authenticate'").bind(data.profileId).first<{ challenge: string; expires_at: number }>(),
+  ])
+  if (!profile || !challenge || challenge.expires_at < Date.now()) return json(env, { error: 'Die Passkey-Anfrage ist abgelaufen.' }, 400)
+  const response = data.response as unknown as AuthenticationResponseJSON
+  const stored = await env.DB.prepare('SELECT id, public_key, counter, transports FROM passkey_credentials WHERE id = ? AND profile_id = ?').bind(response.id, profile.id).first<{ id: string; public_key: string; counter: number; transports: string }>()
+  if (!stored) return json(env, { error: 'Dieser Passkey ist nicht bekannt.' }, 401)
+  const credential: WebAuthnCredential = { id: stored.id as Base64URLString, publicKey: base64UrlToBytes(stored.public_key), counter: stored.counter, transports: JSON.parse(stored.transports || '[]') }
+  const verification = await verifyAuthenticationResponse({ response, expectedChallenge: challenge.challenge, expectedOrigin: EXPECTED_ORIGIN, expectedRPID: RP_ID, credential, requireUserVerification: true })
+  if (!verification.verified) return json(env, { error: 'Passkey-Anmeldung fehlgeschlagen.' }, 401)
+  const session = token()
+  await env.DB.batch([
+    env.DB.prepare('UPDATE passkey_credentials SET counter = ? WHERE id = ?').bind(verification.authenticationInfo.newCounter, stored.id),
+    env.DB.prepare('INSERT INTO sessions (session_hash, profile_id) VALUES (?, ?)').bind(await hash(session), profile.id),
+    env.DB.prepare('DELETE FROM passkey_challenges WHERE profile_id = ?').bind(profile.id),
+  ])
+  return json(env, { token: session, role: profile.role })
+}
+
+async function addAchievement(request: Request, env: Env) {
+  const admin = await requireProfile(request, env, true)
+  if (!admin) return json(env, { error: 'Nur der Harte Kern darf Auszeichnungen verleihen.' }, 403)
+  const data = await body(request)
+  if (typeof data.profileId !== 'string' || typeof data.title !== 'string' || !data.title.trim()) return json(env, { error: 'Profil oder Titel fehlt.' }, 400)
+  const id = crypto.randomUUID()
+  await env.DB.prepare('INSERT INTO achievements (id, profile_id, title, icon, awarded_by) SELECT ?, id, ?, ?, ? FROM profiles WHERE id = ? AND trip_id = ?')
+    .bind(id, data.title.trim().slice(0, 60), typeof data.icon === 'string' ? data.icon.slice(0, 8) : '🏆', admin.id, data.profileId, TRIP_ID).run()
+  return json(env, { id }, 201)
+}
+
 async function addChat(request: Request, env: RuntimeEnv, ctx: ExecutionContext) {
   const profile = await requireProfile(request, env)
   if (!profile) return json(env, { error: 'Bitte zuerst beitreten oder anmelden.' }, 401)
@@ -338,11 +449,17 @@ export default {
     try {
       if (request.method === 'GET' && pathname === '/state') return state(request, env)
       if (request.method === 'POST' && pathname === '/login') return login(request, env as RuntimeEnv)
+      if (request.method === 'POST' && pathname === '/logout') return logout(request, env)
+      if (request.method === 'POST' && pathname === '/passkeys/register/options') return passkeyRegistrationOptions(request, env)
+      if (request.method === 'POST' && pathname === '/passkeys/register/verify') return passkeyRegistrationVerify(request, env)
+      if (request.method === 'POST' && pathname === '/passkeys/authenticate/options') return passkeyAuthenticationOptions(request, env)
+      if (request.method === 'POST' && pathname === '/passkeys/authenticate/verify') return passkeyAuthenticationVerify(request, env)
       if (request.method === 'POST' && pathname === '/setup-owner') return setupOwner(request, env as RuntimeEnv)
       if (request.method === 'PUT' && pathname === '/state') return saveState(request, env as RuntimeEnv, ctx)
       if (request.method === 'POST' && pathname === '/invitations') return createInvitation(request, env)
       if (request.method === 'POST' && pathname === '/invitations/accept') return acceptInvitation(request, env)
       if (request.method === 'PATCH' && pathname === '/profile') return updateProfile(request, env)
+      if (request.method === 'POST' && pathname === '/achievements') return addAchievement(request, env)
       if (request.method === 'PUT' && pathname === '/profile/avatar') return uploadAvatar(request, env)
       if (request.method === 'GET' && pathname.startsWith('/avatars/')) return avatar(pathname, env)
       if (request.method === 'GET' && pathname === '/extras') return extras(request, env)

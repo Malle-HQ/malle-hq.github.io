@@ -1,6 +1,7 @@
 type OneSignalClient = {
   init: (options: Record<string, unknown>) => Promise<void>
   login: (externalId: string) => Promise<void>
+  logout: () => Promise<void>
   User: { addTag: (key: string, value: string) => Promise<void> }
   Notifications: { permission: boolean; requestPermission: () => Promise<boolean> }
 }
@@ -46,4 +47,9 @@ export function requestPushPermission(onResult: (allowed: boolean) => void) {
     const allowed = await oneSignal.Notifications.requestPermission()
     onResult(allowed)
   })
+}
+
+export function forgetPushUser() {
+  window.OneSignalDeferred = window.OneSignalDeferred || []
+  window.OneSignalDeferred.push(oneSignal => oneSignal.logout())
 }

@@ -119,3 +119,44 @@ CREATE TABLE IF NOT EXISTS past_trips (
 CREATE INDEX IF NOT EXISTS idx_chat_trip_created ON chat_messages(trip_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_highlights_trip_created ON highlights(trip_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_past_trips_start ON past_trips(start_date);
+
+CREATE TABLE IF NOT EXISTS passkey_credentials (
+  id TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL,
+  public_key TEXT NOT NULL,
+  counter INTEGER NOT NULL DEFAULT 0,
+  transports TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS passkey_challenges (
+  profile_id TEXT PRIMARY KEY,
+  challenge TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS achievements (
+  id TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  icon TEXT NOT NULL DEFAULT '🏆',
+  awarded_by TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+  FOREIGN KEY (awarded_by) REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_passkeys_profile ON passkey_credentials(profile_id);
+CREATE INDEX IF NOT EXISTS idx_achievements_profile ON achievements(profile_id);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  session_hash TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_profile ON sessions(profile_id);
