@@ -109,7 +109,7 @@ async function body(request: Request): Promise<Json> {
 async function currentProfile(request: Request, env: Env) {
   const auth = request.headers.get('authorization')
   if (!auth?.startsWith('Bearer ')) return null
-  return env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, visible FROM profiles WHERE session_hash = ? AND trip_id = ?')
+  return env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, visible, flies FROM profiles WHERE session_hash = ? AND trip_id = ?')
     .bind(await hash(auth.slice(7)), TRIP_ID).first()
 }
 
@@ -132,7 +132,7 @@ async function writeTrip(env: Env, content: Json) {
 async function state(request: Request, env: Env) {
   const content = await readTrip(env)
   const profile = await currentProfile(request, env)
-  const profiles = await env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key FROM profiles WHERE trip_id = ? AND visible = 1 ORDER BY created_at').bind(TRIP_ID).all()
+  const profiles = await env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, flies FROM profiles WHERE trip_id = ? AND visible = 1 ORDER BY created_at').bind(TRIP_ID).all()
   const participants = profiles.results.map(item => ({
     id: item.id,
     name: `${item.prefix || ''}${item.name}`,
@@ -141,6 +141,7 @@ async function state(request: Request, env: Env) {
     status: item.status,
     color: item.color,
     avatarUrl: item.avatar_key ? `/avatars/${item.id}` : null,
+    flies: Boolean(item.flies),
   }))
   const owner = await env.DB.prepare("SELECT password_hash FROM profiles WHERE id = 'owner'").first<{ password_hash: string | null }>()
   return json(env, { content, participants, profile, isAdmin: profile?.role === 'Harter Kern', setupRequired: !owner?.password_hash })
@@ -221,8 +222,8 @@ async function acceptInvitation(request: Request, env: Env) {
   const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
   const passwordHash = await passwordDigest(data.password, salt)
   await env.DB.batch([
-    env.DB.prepare(`INSERT INTO profiles (id, trip_id, name, prefix, nickname, role, status, color, login_name, password_hash, password_salt, session_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(profileId, TRIP_ID, data.name.trim().slice(0, 60), typeof data.prefix === 'string' ? data.prefix.slice(0, 30) : '', typeof data.nickname === 'string' ? data.nickname.slice(0, 80) : '', invitation.role, ['Dabei','Vielleicht','Abgesagt'].includes(String(data.status)) ? data.status : 'Dabei', typeof data.color === 'string' ? data.color : '#8f5bd7', data.loginName.trim(), passwordHash, salt, await hash(session)),
+    env.DB.prepare(`INSERT INTO profiles (id, trip_id, name, prefix, nickname, role, status, color, flies, login_name, password_hash, password_salt, session_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(profileId, TRIP_ID, data.name.trim().slice(0, 60), typeof data.prefix === 'string' ? data.prefix.slice(0, 30) : '', typeof data.nickname === 'string' ? data.nickname.slice(0, 80) : '', invitation.role, ['Dabei','Vielleicht','Abgesagt'].includes(String(data.status)) ? data.status : 'Dabei', typeof data.color === 'string' ? data.color : '#8f5bd7', data.flies === true ? 1 : 0, data.loginName.trim(), passwordHash, salt, await hash(session)),
     env.DB.prepare('UPDATE invitations SET used_at = CURRENT_TIMESTAMP WHERE id = ?').bind(invitation.id),
   ])
   return json(env, { token: session, role: invitation.role, profileId })
@@ -233,8 +234,8 @@ async function updateProfile(request: Request, env: Env) {
   if (!profile) return json(env, { error: 'Bitte erneut anmelden.' }, 401)
   const data = await body(request)
   if (typeof data.name !== 'string' || !data.name.trim()) return json(env, { error: 'Der Name fehlt.' }, 400)
-  await env.DB.prepare('UPDATE profiles SET name = ?, prefix = ?, nickname = ?, status = ?, color = ?, visible = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-    .bind(data.name.trim().slice(0, 60), typeof data.prefix === 'string' ? data.prefix.slice(0, 30) : '', typeof data.nickname === 'string' ? data.nickname.slice(0, 80) : profile.nickname, ['Dabei','Vielleicht','Abgesagt'].includes(String(data.status)) ? data.status : profile.status, typeof data.color === 'string' ? data.color : profile.color, data.visible === false ? 0 : 1, profile.id).run()
+  await env.DB.prepare('UPDATE profiles SET name = ?, prefix = ?, nickname = ?, status = ?, color = ?, visible = ?, flies = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+    .bind(data.name.trim().slice(0, 60), typeof data.prefix === 'string' ? data.prefix.slice(0, 30) : '', typeof data.nickname === 'string' ? data.nickname.slice(0, 80) : profile.nickname, ['Dabei','Vielleicht','Abgesagt'].includes(String(data.status)) ? data.status : profile.status, typeof data.color === 'string' ? data.color : profile.color, data.visible === false ? 0 : 1, data.flies === true ? 1 : 0, profile.id).run()
   return json(env, { ok: true })
 }
 

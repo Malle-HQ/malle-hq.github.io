@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   color TEXT NOT NULL DEFAULT '#8f5bd7',
   avatar_key TEXT,
   visible INTEGER NOT NULL DEFAULT 1,
+  flies INTEGER NOT NULL DEFAULT 0,
   login_name TEXT,
   password_hash TEXT,
   password_salt TEXT,
