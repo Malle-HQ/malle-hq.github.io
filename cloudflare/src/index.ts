@@ -152,7 +152,7 @@ async function state(request: Request, env: Env) {
   const profile = await currentProfile(request, env)
   const [profiles, achievements] = await Promise.all([
     env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, flies FROM profiles WHERE trip_id = ? AND visible = 1 ORDER BY created_at').bind(TRIP_ID).all(),
-    env.DB.prepare('SELECT a.id, a.profile_id, a.title, a.icon FROM achievements a JOIN profiles p ON p.id = a.profile_id WHERE p.trip_id = ? ORDER BY a.created_at DESC').bind(TRIP_ID).all(),
+    env.DB.prepare('SELECT a.id, a.profile_id, a.title, a.icon, a.created_at, giver.name AS giver_name, giver.prefix AS giver_prefix FROM achievements a JOIN profiles p ON p.id = a.profile_id LEFT JOIN profiles giver ON giver.id = a.awarded_by WHERE p.trip_id = ? ORDER BY a.created_at DESC').bind(TRIP_ID).all(),
   ])
   const participants = profiles.results.map(item => ({
     id: item.id,
@@ -163,12 +163,13 @@ async function state(request: Request, env: Env) {
     color: item.color,
     avatarUrl: item.avatar_key ? `/avatars/${item.id}` : null,
     flies: Boolean(item.flies),
-    achievements: achievements.results.filter(badge => badge.profile_id === item.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon })),
+    achievements: achievements.results.filter(badge => badge.profile_id === item.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon, awardedBy: `${badge.giver_prefix || ''}${badge.giver_name || 'Bierbert'}`, createdAt: badge.created_at })),
   }))
   const owner = await env.DB.prepare("SELECT password_hash FROM profiles WHERE id = 'owner'").first<{ password_hash: string | null }>()
-  const accountProfiles = profile?.role === 'Harter Kern' ? (await env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, visible, flies FROM profiles WHERE trip_id = ? ORDER BY name').bind(TRIP_ID).all()).results.map(item => ({ id: item.id, name: `${item.prefix || ''}${item.name}`, nickname: item.nickname, role: item.role, status: item.status, color: item.color, avatarUrl: item.avatar_key ? `/image/${item.avatar_key}` : null, visible: Boolean(item.visible), flies: Boolean(item.flies), achievements: achievements.results.filter(badge => badge.profile_id === item.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon })) })) : []
+  const myAchievements = profile ? achievements.results.filter(badge => badge.profile_id === profile.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon, awardedBy: `${badge.giver_prefix || ''}${badge.giver_name || 'Bierbert'}`, createdAt: badge.created_at })) : []
+  const accountProfiles = profile?.role === 'Harter Kern' ? (await env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, visible, flies FROM profiles WHERE trip_id = ? ORDER BY name').bind(TRIP_ID).all()).results.map(item => ({ id: item.id, name: `${item.prefix || ''}${item.name}`, nickname: item.nickname, role: item.role, status: item.status, color: item.color, avatarUrl: item.avatar_key ? `/image/${item.avatar_key}` : null, visible: Boolean(item.visible), flies: Boolean(item.flies), achievements: achievements.results.filter(badge => badge.profile_id === item.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon, awardedBy: `${badge.giver_prefix || ''}${badge.giver_name || 'Bierbert'}`, createdAt: badge.created_at })) })) : []
   const invitations = profile?.role === 'Harter Kern' ? (await env.DB.prepare('SELECT id, recipient, role, used_at, revoked_at, created_at FROM invitations WHERE trip_id = ? ORDER BY created_at DESC').bind(TRIP_ID).all()).results.map(item => ({ id: item.id, recipient: item.recipient, role: item.role, used: Boolean(item.used_at), failed: Boolean(item.revoked_at), createdAt: item.created_at })) : []
-  return json(env, { content, participants, profile, accountProfiles, invitations, isAdmin: profile?.role === 'Harter Kern', setupRequired: !owner?.password_hash })
+  return json(env, { content, participants, profile, myAchievements, accountProfiles, invitations, isAdmin: profile?.role === 'Harter Kern', setupRequired: !owner?.password_hash })
 }
 
 async function login(request: Request, env: RuntimeEnv) {
@@ -487,7 +488,7 @@ async function addAchievement(request: Request, env: Env) {
   const id = crypto.randomUUID()
   await env.DB.prepare('INSERT INTO achievements (id, profile_id, title, icon, awarded_by) SELECT ?, id, ?, ?, ? FROM profiles WHERE id = ? AND trip_id = ?')
     .bind(id, data.title.trim().slice(0, 60), typeof data.icon === 'string' ? data.icon.slice(0, 8) : '🏆', admin.id, data.profileId, TRIP_ID).run()
-  return json(env, { id }, 201)
+  return json(env, { id, awardedBy: `${admin.prefix || ''}${admin.name}` }, 201)
 }
 
 async function addChat(request: Request, env: RuntimeEnv, ctx: ExecutionContext) {
