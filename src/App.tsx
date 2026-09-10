@@ -77,6 +77,7 @@ function App() {
   useEffect(() => { if (profileId) identifyPushUser(profileId) }, [profileId])
   useEffect(() => { if (!extrasAuthenticated) return; const timer = window.setInterval(() => void loadExtras(), 20_000); return () => window.clearInterval(timer) }, [extrasAuthenticated])
   useEffect(() => { const receivePrompt = (event: Event) => { event.preventDefault(); setInstallPrompt(event as InstallPrompt) }; window.addEventListener('beforeinstallprompt', receivePrompt); return () => window.removeEventListener('beforeinstallprompt', receivePrompt) }, [])
+  useEffect(() => { const plane = document.querySelector('.plane-body'); if (!plane || !('IntersectionObserver' in window) || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return; plane.classList.add('waiting'); const observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) { plane.classList.remove('waiting'); plane.classList.add('fly-in'); observer.disconnect() } }, { threshold: 0.25 }); observer.observe(plane); return () => observer.disconnect() }, [])
   const duration = useMemo(() => { const start = Date.parse(`${trip.startDate.slice(0, 10)}T00:00:00Z`), end = Date.parse(`${trip.endDate.slice(0, 10)}T00:00:00Z`), nights = Math.max(1, Math.round((end - start) / 86_400_000)); return `${nights} ${nights === 1 ? 'Nacht' : 'Nächte'}` }, [trip.endDate, trip.startDate])
   const displayName = `${trip.myProfile.prefix}${trip.myProfile.name}`
   const flyers = trip.participants.filter(person => person.flies)
