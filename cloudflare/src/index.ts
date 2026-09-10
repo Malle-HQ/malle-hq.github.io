@@ -41,6 +41,7 @@ async function sendPush(env: RuntimeEnv, kind: keyof typeof pushLines, actorId: 
       contents: { de: content, en: content },
       filters: [{ field: 'tag', key: 'profile_id', relation: '!=', value: actorId }],
       url: kind === 'chat' ? `${env.WEB_ORIGIN}/#chat` : kind === 'highlight' ? `${env.WEB_ORIGIN}/#highlights` : env.WEB_ORIGIN,
+      chrome_web_icon: `${env.WEB_ORIGIN}/app-icon-192.png`,
     }),
   })
   if (!response.ok) console.error(JSON.stringify({ event: 'push_failed', kind, status: response.status, body: await response.text() }))
