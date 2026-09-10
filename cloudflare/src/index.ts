@@ -227,6 +227,21 @@ async function createPasswordReset(request: Request, env: Env) {
   return json(env, { code, profileId: target.id, profileName: `${target.prefix || ''}${target.name}`, expiresInHours: 24 }, 201)
 }
 
+async function deleteProfile(request: Request, pathname: string, env: Env) {
+  const admin = await requireProfile(request, env, true)
+  if (!admin) return json(env, { error: 'Nur der Harte Kern darf Profile löschen.' }, 403)
+  const profileId = decodeURIComponent(pathname.split('/').pop() || '')
+  const target = await env.DB.prepare('SELECT id, role, avatar_key FROM profiles WHERE id = ? AND trip_id = ?').bind(profileId, TRIP_ID).first<{ id: string; role: string; avatar_key: string | null }>()
+  if (!target) return json(env, { error: 'Dieses Profil wurde nicht gefunden.' }, 404)
+  if (target.role === 'Harter Kern') {
+    const coreCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM profiles WHERE trip_id = ? AND role = 'Harter Kern'").bind(TRIP_ID).first<{ count: number }>()
+    if (Number(coreCount?.count || 0) <= 1) return json(env, { error: 'Das letzte Harter-Kern-Profil kann nicht gelöscht werden. Lege zuerst einen neuen Harten Kern an.' }, 409)
+  }
+  await env.DB.prepare('DELETE FROM profiles WHERE id = ? AND trip_id = ?').bind(profileId, TRIP_ID).run()
+  if (target.avatar_key) await env.PROFILE_IMAGES.delete(target.avatar_key)
+  return json(env, { ok: true, selfDeleted: target.id === admin.id })
+}
+
 async function redeemPasswordReset(request: Request, env: Env) {
   const data = await body(request)
   if (typeof data.code !== 'string' || !validPassword(data.newPassword)) return json(env, { error: 'Code fehlt oder das neue Passwort ist zu kurz.' }, 400)
@@ -506,6 +521,7 @@ export default {
       if (request.method === 'POST' && pathname === '/password/change') return changePassword(request, env)
       if (request.method === 'POST' && pathname === '/password-resets') return createPasswordReset(request, env)
       if (request.method === 'POST' && pathname === '/password-resets/redeem') return redeemPasswordReset(request, env)
+      if (request.method === 'DELETE' && pathname.startsWith('/profiles/')) return deleteProfile(request, pathname, env)
       if (request.method === 'POST' && pathname === '/passkeys/register/options') return passkeyRegistrationOptions(request, env)
       if (request.method === 'POST' && pathname === '/passkeys/register/verify') return passkeyRegistrationVerify(request, env)
       if (request.method === 'POST' && pathname === '/passkeys/authenticate/options') return passkeyAuthenticationOptions(request, env)
