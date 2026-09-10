@@ -364,10 +364,11 @@ async function uploadAvatar(request: Request, env: Env) {
   const profile = await requireProfile(request, env)
   if (!profile) return json(env, { error: 'Bitte erneut anmelden.' }, 401)
   const type = request.headers.get('content-type') || ''
-  const length = Number(request.headers.get('content-length') || 0)
-  if (!['image/jpeg','image/png','image/webp'].includes(type) || length > 5_000_000) return json(env, { error: 'Bitte JPG, PNG oder WebP bis 5 MB wählen.' }, 400)
+  if (!['image/jpeg','image/png','image/webp'].includes(type)) return json(env, { error: 'Bitte JPG, PNG oder WebP wählen.' }, 400)
+  const image = await request.arrayBuffer()
+  if (!image.byteLength || image.byteLength > 5_000_000) return json(env, { error: 'Das vorbereitete Profilbild darf höchstens 5 MB groß sein.' }, 400)
   const key = `${TRIP_ID}/${profile.id}`
-  await env.PROFILE_IMAGES.put(key, request.body, { httpMetadata: { contentType: type } })
+  await env.PROFILE_IMAGES.put(key, image, { httpMetadata: { contentType: type } })
   await env.DB.prepare('UPDATE profiles SET avatar_key = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(key, profile.id).run()
   return json(env, { avatarUrl: `/avatars/${profile.id}` })
 }
@@ -496,16 +497,27 @@ async function addHighlight(request: Request, env: RuntimeEnv, ctx: ExecutionCon
   const url = new URL(request.url)
   const title = (url.searchParams.get('title') || '').trim().slice(0, 100)
   const type = request.headers.get('content-type') || ''
-  const length = Number(request.headers.get('content-length') || 0)
   if (!title) return json(env, { error: 'Bitte einen Titel eingeben.' }, 400)
-  if (!['image/jpeg','image/png','image/webp'].includes(type) || length > 8_000_000) return json(env, { error: 'Bitte JPG, PNG oder WebP bis 8 MB wählen.' }, 400)
+  if (!['image/jpeg','image/png','image/webp'].includes(type)) return json(env, { error: 'Bitte JPG, PNG oder WebP wählen.' }, 400)
+  const image = await request.arrayBuffer()
+  if (!image.byteLength || image.byteLength > 8_000_000) return json(env, { error: 'Das vorbereitete Beweisfoto darf höchstens 8 MB groß sein.' }, 400)
   const id = crypto.randomUUID()
   const key = `${TRIP_ID}/highlights/${id}`
-  await env.PROFILE_IMAGES.put(key, request.body, { httpMetadata: { contentType: type } })
+  await env.PROFILE_IMAGES.put(key, image, { httpMetadata: { contentType: type } })
   await env.DB.prepare('INSERT INTO highlights (id, trip_id, profile_id, title, image_key) VALUES (?, ?, ?, ?, ?)')
     .bind(id, TRIP_ID, profile.id, title).run()
   ctx.waitUntil(sendPush(env, 'highlight', String(profile.id), `${profile.prefix || ''}${profile.name}`, title))
   return json(env, { ok: true }, 201)
+}
+
+async function deleteHighlight(pathname: string, request: Request, env: Env) {
+  if (!await requireProfile(request, env, true)) return json(env, { error: 'Nur der Harte Kern darf Beweisfotos löschen.' }, 403)
+  const id = decodeURIComponent(pathname.split('/').pop() || '')
+  const highlight = await env.DB.prepare('SELECT image_key FROM highlights WHERE id = ? AND trip_id = ?').bind(id, TRIP_ID).first<{ image_key: string }>()
+  if (!highlight) return json(env, { error: 'Dieses Beweisfoto wurde nicht gefunden.' }, 404)
+  await env.PROFILE_IMAGES.delete(highlight.image_key)
+  await env.DB.prepare('DELETE FROM highlights WHERE id = ? AND trip_id = ?').bind(id, TRIP_ID).run()
+  return json(env, { ok: true })
 }
 
 async function highlightImage(pathname: string, env: Env) {
@@ -558,6 +570,7 @@ export default {
       if (request.method === 'GET' && pathname === '/extras') return extras(request, env)
       if (request.method === 'POST' && pathname === '/chat') return addChat(request, env as RuntimeEnv, ctx)
       if (request.method === 'POST' && pathname === '/highlights') return addHighlight(request, env as RuntimeEnv, ctx)
+      if (request.method === 'DELETE' && pathname.startsWith('/highlights/')) return deleteHighlight(pathname, request, env)
       if (request.method === 'GET' && pathname.startsWith('/highlights/')) return highlightImage(pathname, env)
       if (request.method === 'POST' && pathname === '/past-trips') return addPastTrip(request, env)
       return json(env, { error: 'Nicht gefunden.' }, 404)
