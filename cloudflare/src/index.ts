@@ -167,7 +167,8 @@ async function state(request: Request, env: Env) {
   }))
   const owner = await env.DB.prepare("SELECT password_hash FROM profiles WHERE id = 'owner'").first<{ password_hash: string | null }>()
   const accountProfiles = profile?.role === 'Harter Kern' ? (await env.DB.prepare('SELECT id, name, prefix, role, visible FROM profiles WHERE trip_id = ? ORDER BY name').bind(TRIP_ID).all()).results.map(item => ({ id: item.id, name: `${item.prefix || ''}${item.name}`, role: item.role, visible: Boolean(item.visible) })) : []
-  return json(env, { content, participants, profile, accountProfiles, isAdmin: profile?.role === 'Harter Kern', setupRequired: !owner?.password_hash })
+  const invitations = profile?.role === 'Harter Kern' ? (await env.DB.prepare('SELECT id, recipient, role, used_at, revoked_at, created_at FROM invitations WHERE trip_id = ? ORDER BY created_at DESC').bind(TRIP_ID).all()).results.map(item => ({ id: item.id, recipient: item.recipient, role: item.role, used: Boolean(item.used_at), failed: Boolean(item.revoked_at), createdAt: item.created_at })) : []
+  return json(env, { content, participants, profile, accountProfiles, invitations, isAdmin: profile?.role === 'Harter Kern', setupRequired: !owner?.password_hash })
 }
 
 async function login(request: Request, env: RuntimeEnv) {
@@ -302,18 +303,27 @@ async function createInvitation(request: Request, env: Env) {
   const data = await body(request)
   const recipient = typeof data.recipient === 'string' && data.recipient.trim() ? data.recipient.trim().slice(0, 80) : 'Offene Einladung'
   const role = data.role === 'Harter Kern' ? 'Harter Kern' : 'Crewmitglied'
+  if (recipient !== 'Offene Einladung') {
+    const [existingProfile, existingInvitation] = await Promise.all([
+      env.DB.prepare("SELECT id FROM profiles WHERE trip_id = ? AND (name = ? COLLATE NOCASE OR (prefix || name) = ? COLLATE NOCASE)").bind(TRIP_ID, recipient, recipient).first(),
+      env.DB.prepare('SELECT id, used_at FROM invitations WHERE trip_id = ? AND recipient = ? COLLATE NOCASE AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1').bind(TRIP_ID, recipient).first<{ id: string; used_at: string | null }>(),
+    ])
+    if (existingProfile || existingInvitation?.used_at) return json(env, { error: `${recipient} ist bereits erfolgreich dabei.` }, 409)
+    if (existingInvitation) return json(env, { error: `Für ${recipient} gibt es bereits eine offene Einladung.` }, 409)
+  }
   const code = `MALLE-${token().slice(0, 8).toUpperCase()}`
+  const id = crypto.randomUUID()
   await env.DB.prepare('INSERT INTO invitations (id, trip_id, code_hash, recipient, role) VALUES (?, ?, ?, ?, ?)')
-    .bind(crypto.randomUUID(), TRIP_ID, await hash(code), recipient, role).run()
-  return json(env, { code, recipient, role })
+    .bind(id, TRIP_ID, await hash(code), recipient, role).run()
+  return json(env, { id, code, recipient, role })
 }
 
 async function checkInvitation(request: Request, env: Env) {
   const data = await body(request)
   if (typeof data.code !== 'string') return json(env, { error: 'Bitte gib einen Einladungscode ein.' }, 400)
-  const invitation = await env.DB.prepare('SELECT recipient, role, used_at FROM invitations WHERE code_hash = ? AND trip_id = ?')
-    .bind(await hash(data.code.trim().toUpperCase()), TRIP_ID).first<{ recipient: string; role: string; used_at: string | null }>()
-  if (!invitation || invitation.used_at) return json(env, { error: 'Dieser Code ist ungültig oder wurde schon verwendet.' }, 400)
+  const invitation = await env.DB.prepare('SELECT recipient, role, used_at, revoked_at FROM invitations WHERE code_hash = ? AND trip_id = ?')
+    .bind(await hash(data.code.trim().toUpperCase()), TRIP_ID).first<{ recipient: string; role: string; used_at: string | null; revoked_at: string | null }>()
+  if (!invitation || invitation.used_at || invitation.revoked_at) return json(env, { error: 'Dieser Code ist ungültig, ersetzt oder wurde schon verwendet.' }, 400)
   return json(env, { valid: true, recipient: invitation.recipient, role: invitation.role })
 }
 
@@ -324,9 +334,9 @@ async function acceptInvitation(request: Request, env: Env) {
   if (!validPassword(data.password)) return json(env, { error: 'Das Passwort muss mindestens 8 Zeichen lang sein.' }, 400)
   const nameTaken = await env.DB.prepare('SELECT id FROM profiles WHERE login_name = ? COLLATE NOCASE').bind(data.loginName.trim()).first()
   if (nameTaken) return json(env, { error: 'Dieser Login-Name ist schon vergeben.' }, 409)
-  const invitation = await env.DB.prepare('SELECT id, recipient, role, used_at FROM invitations WHERE code_hash = ? AND trip_id = ?')
+  const invitation = await env.DB.prepare('SELECT id, recipient, role, used_at, revoked_at FROM invitations WHERE code_hash = ? AND trip_id = ?')
     .bind(await hash(data.code.trim().toUpperCase()), TRIP_ID).first()
-  if (!invitation || invitation.used_at) return json(env, { error: 'Dieser Code ist ungültig oder wurde schon verwendet.' }, 400)
+  if (!invitation || invitation.used_at || invitation.revoked_at) return json(env, { error: 'Dieser Code ist ungültig, ersetzt oder wurde schon verwendet.' }, 400)
   const session = token()
   const profileId = crypto.randomUUID()
   const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
@@ -335,6 +345,7 @@ async function acceptInvitation(request: Request, env: Env) {
     env.DB.prepare(`INSERT INTO profiles (id, trip_id, name, prefix, nickname, role, status, color, flies, login_name, password_hash, password_salt, session_hash)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(profileId, TRIP_ID, data.name.trim().slice(0, 60), typeof data.prefix === 'string' ? data.prefix.slice(0, 30) : '', typeof data.nickname === 'string' ? data.nickname.slice(0, 80) : '', invitation.role, ['Dabei','Vielleicht','Abgesagt'].includes(String(data.status)) ? data.status : 'Dabei', typeof data.color === 'string' ? data.color : '#8f5bd7', data.flies === true ? 1 : 0, data.loginName.trim(), passwordHash, salt, await hash(session)),
     env.DB.prepare('UPDATE invitations SET used_at = CURRENT_TIMESTAMP WHERE id = ?').bind(invitation.id),
+    env.DB.prepare('UPDATE invitations SET revoked_at = CURRENT_TIMESTAMP WHERE trip_id = ? AND recipient = ? COLLATE NOCASE AND id != ? AND used_at IS NULL AND revoked_at IS NULL').bind(TRIP_ID, invitation.recipient, invitation.id),
   ])
   return json(env, { token: session, role: invitation.role, profileId })
 }

@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS invitations (
   recipient TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'Crewmitglied',
   used_at TEXT,
+  revoked_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE CASCADE
 );
