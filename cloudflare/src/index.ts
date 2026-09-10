@@ -166,7 +166,8 @@ async function state(request: Request, env: Env) {
     achievements: achievements.results.filter(badge => badge.profile_id === item.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon })),
   }))
   const owner = await env.DB.prepare("SELECT password_hash FROM profiles WHERE id = 'owner'").first<{ password_hash: string | null }>()
-  return json(env, { content, participants, profile, isAdmin: profile?.role === 'Harter Kern', setupRequired: !owner?.password_hash })
+  const accountProfiles = profile?.role === 'Harter Kern' ? (await env.DB.prepare('SELECT id, name, prefix, role, visible FROM profiles WHERE trip_id = ? ORDER BY name').bind(TRIP_ID).all()).results.map(item => ({ id: item.id, name: `${item.prefix || ''}${item.name}`, role: item.role, visible: Boolean(item.visible) })) : []
+  return json(env, { content, participants, profile, accountProfiles, isAdmin: profile?.role === 'Harter Kern', setupRequired: !owner?.password_hash })
 }
 
 async function login(request: Request, env: RuntimeEnv) {
@@ -191,6 +192,58 @@ async function logout(request: Request, env: Env) {
     env.DB.prepare('UPDATE profiles SET session_hash = ? WHERE session_hash = ?').bind(`logged-out-${crypto.randomUUID()}`, sessionHash),
   ])
   return json(env, { ok: true })
+}
+
+async function changePassword(request: Request, env: Env) {
+  const profile = await requireProfile(request, env)
+  if (!profile) return json(env, { error: 'Bitte erneut anmelden.' }, 401)
+  const data = await body(request)
+  if (!validPassword(data.currentPassword) || !validPassword(data.newPassword)) return json(env, { error: 'Das neue Passwort muss mindestens 8 Zeichen lang sein.' }, 400)
+  const credentials = await env.DB.prepare('SELECT password_hash, password_salt FROM profiles WHERE id = ?').bind(profile.id).first<{ password_hash: string; password_salt: string }>()
+  if (!credentials || !await secureEqual(await passwordDigest(data.currentPassword, credentials.password_salt), credentials.password_hash)) return json(env, { error: 'Das bisherige Passwort stimmt nicht.' }, 401)
+  const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
+  const passwordHash = await passwordDigest(data.newPassword, salt)
+  const auth = request.headers.get('authorization')!
+  const sessionHash = await hash(auth.slice(7))
+  await env.DB.batch([
+    env.DB.prepare('UPDATE profiles SET password_hash = ?, password_salt = ?, session_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(passwordHash, salt, `changed-${crypto.randomUUID()}`, profile.id),
+    env.DB.prepare('DELETE FROM sessions WHERE profile_id = ?').bind(profile.id),
+    env.DB.prepare('INSERT INTO sessions (session_hash, profile_id) VALUES (?, ?)').bind(sessionHash, profile.id),
+  ])
+  return json(env, { ok: true })
+}
+
+async function createPasswordReset(request: Request, env: Env) {
+  const admin = await requireProfile(request, env, true)
+  if (!admin) return json(env, { error: 'Nur der Harte Kern darf Wiederherstellungscodes erstellen.' }, 403)
+  const data = await body(request)
+  const target = await env.DB.prepare('SELECT id, name, prefix FROM profiles WHERE id = ? AND trip_id = ?').bind(data.profileId, TRIP_ID).first()
+  if (!target) return json(env, { error: 'Dieses Profil wurde nicht gefunden.' }, 404)
+  const code = `MALLE-PW-${token().slice(0, 10).toUpperCase()}`
+  await env.DB.batch([
+    env.DB.prepare('UPDATE password_reset_codes SET used_at = CURRENT_TIMESTAMP WHERE profile_id = ? AND used_at IS NULL').bind(target.id),
+    env.DB.prepare('INSERT INTO password_reset_codes (id, profile_id, code_hash, expires_at, created_by) VALUES (?, ?, ?, ?, ?)').bind(crypto.randomUUID(), target.id, await hash(code), Date.now() + 24 * 60 * 60 * 1000, admin.id),
+  ])
+  return json(env, { code, profileId: target.id, profileName: `${target.prefix || ''}${target.name}`, expiresInHours: 24 }, 201)
+}
+
+async function redeemPasswordReset(request: Request, env: Env) {
+  const data = await body(request)
+  if (typeof data.code !== 'string' || !validPassword(data.newPassword)) return json(env, { error: 'Code fehlt oder das neue Passwort ist zu kurz.' }, 400)
+  const reset = await env.DB.prepare('SELECT id, profile_id, expires_at, used_at FROM password_reset_codes WHERE code_hash = ?').bind(await hash(data.code.trim().toUpperCase())).first<{ id: string; profile_id: string; expires_at: number; used_at: string | null }>()
+  if (!reset || reset.used_at || reset.expires_at < Date.now()) return json(env, { error: 'Dieser Code ist ungültig, abgelaufen oder wurde schon benutzt.' }, 400)
+  const profile = await env.DB.prepare('SELECT role FROM profiles WHERE id = ? AND trip_id = ?').bind(reset.profile_id, TRIP_ID).first<{ role: string }>()
+  if (!profile) return json(env, { error: 'Das Profil wurde nicht gefunden.' }, 404)
+  const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
+  const passwordHash = await passwordDigest(data.newPassword, salt)
+  const session = token()
+  await env.DB.batch([
+    env.DB.prepare('UPDATE profiles SET password_hash = ?, password_salt = ?, session_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(passwordHash, salt, `reset-${crypto.randomUUID()}`, reset.profile_id),
+    env.DB.prepare('DELETE FROM sessions WHERE profile_id = ?').bind(reset.profile_id),
+    env.DB.prepare('INSERT INTO sessions (session_hash, profile_id) VALUES (?, ?)').bind(await hash(session), reset.profile_id),
+    env.DB.prepare('UPDATE password_reset_codes SET used_at = CURRENT_TIMESTAMP WHERE id = ?').bind(reset.id),
+  ])
+  return json(env, { token: session, role: profile.role })
 }
 
 async function setupOwner(request: Request, env: RuntimeEnv) {
@@ -450,6 +503,9 @@ export default {
       if (request.method === 'GET' && pathname === '/state') return state(request, env)
       if (request.method === 'POST' && pathname === '/login') return login(request, env as RuntimeEnv)
       if (request.method === 'POST' && pathname === '/logout') return logout(request, env)
+      if (request.method === 'POST' && pathname === '/password/change') return changePassword(request, env)
+      if (request.method === 'POST' && pathname === '/password-resets') return createPasswordReset(request, env)
+      if (request.method === 'POST' && pathname === '/password-resets/redeem') return redeemPasswordReset(request, env)
       if (request.method === 'POST' && pathname === '/passkeys/register/options') return passkeyRegistrationOptions(request, env)
       if (request.method === 'POST' && pathname === '/passkeys/register/verify') return passkeyRegistrationVerify(request, env)
       if (request.method === 'POST' && pathname === '/passkeys/authenticate/options') return passkeyAuthenticationOptions(request, env)

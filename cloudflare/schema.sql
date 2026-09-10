@@ -160,3 +160,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_profile ON sessions(profile_id);
+
+CREATE TABLE IF NOT EXISTS password_reset_codes (
+  id TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL,
+  code_hash TEXT NOT NULL UNIQUE,
+  expires_at INTEGER NOT NULL,
+  used_at TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
+  FOREIGN KEY (created_by) REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_resets_profile ON password_reset_codes(profile_id, expires_at);
