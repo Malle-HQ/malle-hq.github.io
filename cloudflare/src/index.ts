@@ -327,6 +327,16 @@ async function checkInvitation(request: Request, env: Env) {
   return json(env, { valid: true, recipient: invitation.recipient, role: invitation.role })
 }
 
+async function deleteInvitation(pathname: string, request: Request, env: Env) {
+  if (!await requireProfile(request, env, true)) return json(env, { error: 'Nur der Harte Kern darf Einladungscodes löschen.' }, 403)
+  const id = decodeURIComponent(pathname.split('/').pop() || '')
+  const invitation = await env.DB.prepare('SELECT used_at FROM invitations WHERE id = ? AND trip_id = ?').bind(id, TRIP_ID).first<{ used_at: string | null }>()
+  if (!invitation) return json(env, { error: 'Diese Einladung wurde nicht gefunden.' }, 404)
+  if (invitation.used_at) return json(env, { error: 'Erfolgreiche Einladungen bleiben als Nachweis erhalten.' }, 409)
+  await env.DB.prepare('DELETE FROM invitations WHERE id = ? AND trip_id = ?').bind(id, TRIP_ID).run()
+  return json(env, { ok: true })
+}
+
 async function acceptInvitation(request: Request, env: Env) {
   const data = await body(request)
   if (typeof data.code !== 'string' || typeof data.name !== 'string' || !data.name.trim()) return json(env, { error: 'Code und Name fehlen.' }, 400)
@@ -505,7 +515,7 @@ async function addHighlight(request: Request, env: RuntimeEnv, ctx: ExecutionCon
   const key = `${TRIP_ID}/highlights/${id}`
   await env.PROFILE_IMAGES.put(key, image, { httpMetadata: { contentType: type } })
   await env.DB.prepare('INSERT INTO highlights (id, trip_id, profile_id, title, image_key) VALUES (?, ?, ?, ?, ?)')
-    .bind(id, TRIP_ID, profile.id, title).run()
+    .bind(id, TRIP_ID, profile.id, title, key).run()
   ctx.waitUntil(sendPush(env, 'highlight', String(profile.id), `${profile.prefix || ''}${profile.name}`, title))
   return json(env, { ok: true }, 201)
 }
@@ -563,6 +573,7 @@ export default {
       if (request.method === 'POST' && pathname === '/invitations') return createInvitation(request, env)
       if (request.method === 'POST' && pathname === '/invitations/check') return checkInvitation(request, env)
       if (request.method === 'POST' && pathname === '/invitations/accept') return acceptInvitation(request, env)
+      if (request.method === 'DELETE' && pathname.startsWith('/invitations/')) return deleteInvitation(pathname, request, env)
       if (request.method === 'PATCH' && pathname === '/profile') return updateProfile(request, env)
       if (request.method === 'POST' && pathname === '/achievements') return addAchievement(request, env)
       if (request.method === 'PUT' && pathname === '/profile/avatar') return uploadAvatar(request, env)
