@@ -45,3 +45,4 @@ select{width:100%;padding:12px 13px;border:2px solid #e7dfd1;border-radius:12px;
 .status.invite-failed{color:#a23728;background:#fff0ed}
 .avatar-upload-button{width:100%;margin:10px 0 4px;padding:12px;border:0;border-radius:12px;color:#fff;background:#168aad;font:800 11px/1 'DM Sans',sans-serif;cursor:pointer}.avatar-upload-button:disabled{opacity:.6}.delete-highlight-button{margin-top:10px;padding:7px 9px;border:1px solid #efc5bd;border-radius:9px;color:#a23728;background:#fff0ed;font-size:9px;font-weight:800;cursor:pointer}.highlight-grid article>div{position:relative}
 .profile.profile-own{overflow:hidden;padding:0}.profile.profile-own img{width:100%;height:100%;object-fit:cover}
+.chat-message-body{position:relative;padding-right:34px}.delete-chat-button{position:absolute;top:-3px;right:0;width:30px;height:30px;border:0;border-radius:10px;color:#a23728;background:#fff0ed;font-size:13px;cursor:pointer}.delete-chat-button:active{transform:scale(.94)}

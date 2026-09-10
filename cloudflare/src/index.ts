@@ -398,7 +398,7 @@ async function avatar(pathname: string, env: Env) {
 async function extras(request: Request, env: Env) {
   if (!await requireProfile(request, env)) return json(env, { chat: [], highlights: [], pastTrips: [], authenticated: false })
   const [chat, highlights, pastTrips] = await Promise.all([
-    env.DB.prepare(`SELECT m.id, m.message, m.created_at, p.name, p.prefix, p.color
+    env.DB.prepare(`SELECT m.id, m.profile_id, m.message, m.created_at, p.name, p.prefix, p.color
       FROM chat_messages m JOIN profiles p ON p.id = m.profile_id WHERE m.trip_id = ? ORDER BY m.created_at DESC LIMIT 100`).bind(TRIP_ID).all(),
     env.DB.prepare(`SELECT h.id, h.title, h.created_at, p.name, p.prefix
       FROM highlights h JOIN profiles p ON p.id = h.profile_id WHERE h.trip_id = ? ORDER BY h.created_at DESC LIMIT 100`).bind(TRIP_ID).all(),
@@ -406,7 +406,7 @@ async function extras(request: Request, env: Env) {
   ])
   return json(env, {
     authenticated: true,
-    chat: chat.results.map(item => ({ ...item, author: `${item.prefix || ''}${item.name}` })),
+    chat: chat.results.map(item => ({ ...item, profileId: item.profile_id, author: `${item.prefix || ''}${item.name}` })),
     highlights: highlights.results.map(item => ({ ...item, author: `${item.prefix || ''}${item.name}`, imageUrl: `/highlights/${item.id}` })),
     pastTrips: pastTrips.results,
   })
@@ -501,6 +501,17 @@ async function addChat(request: Request, env: RuntimeEnv, ctx: ExecutionContext)
   return json(env, { ok: true }, 201)
 }
 
+async function deleteChat(pathname: string, request: Request, env: Env) {
+  const profile = await requireProfile(request, env)
+  if (!profile) return json(env, { error: 'Bitte zuerst anmelden.' }, 401)
+  const id = decodeURIComponent(pathname.split('/').pop() || '')
+  const message = await env.DB.prepare('SELECT profile_id FROM chat_messages WHERE id = ? AND trip_id = ?').bind(id, TRIP_ID).first<{ profile_id: string }>()
+  if (!message) return json(env, { error: 'Diese Nachricht wurde nicht gefunden.' }, 404)
+  if (message.profile_id !== profile.id && profile.role !== 'Harter Kern') return json(env, { error: 'Du kannst nur deine eigenen Nachrichten löschen.' }, 403)
+  await env.DB.prepare('DELETE FROM chat_messages WHERE id = ? AND trip_id = ?').bind(id, TRIP_ID).run()
+  return json(env, { ok: true })
+}
+
 async function addHighlight(request: Request, env: RuntimeEnv, ctx: ExecutionContext) {
   const profile = await requireProfile(request, env)
   if (!profile) return json(env, { error: 'Bitte zuerst beitreten oder anmelden.' }, 401)
@@ -580,6 +591,7 @@ export default {
       if (request.method === 'GET' && pathname.startsWith('/avatars/')) return avatar(pathname, env)
       if (request.method === 'GET' && pathname === '/extras') return extras(request, env)
       if (request.method === 'POST' && pathname === '/chat') return addChat(request, env as RuntimeEnv, ctx)
+      if (request.method === 'DELETE' && pathname.startsWith('/chat/')) return deleteChat(pathname, request, env)
       if (request.method === 'POST' && pathname === '/highlights') return addHighlight(request, env as RuntimeEnv, ctx)
       if (request.method === 'DELETE' && pathname.startsWith('/highlights/')) return deleteHighlight(pathname, request, env)
       if (request.method === 'GET' && pathname.startsWith('/highlights/')) return highlightImage(pathname, env)
