@@ -333,7 +333,6 @@ async function deleteInvitation(pathname: string, request: Request, env: Env) {
   const id = decodeURIComponent(pathname.split('/').pop() || '')
   const invitation = await env.DB.prepare('SELECT used_at FROM invitations WHERE id = ? AND trip_id = ?').bind(id, TRIP_ID).first<{ used_at: string | null }>()
   if (!invitation) return json(env, { error: 'Diese Einladung wurde nicht gefunden.' }, 404)
-  if (invitation.used_at) return json(env, { error: 'Erfolgreiche Einladungen bleiben als Nachweis erhalten.' }, 409)
   await env.DB.prepare('DELETE FROM invitations WHERE id = ? AND trip_id = ?').bind(id, TRIP_ID).run()
   return json(env, { ok: true })
 }
@@ -398,18 +397,20 @@ async function avatar(pathname: string, env: Env) {
 
 async function extras(request: Request, env: Env) {
   if (!await requireProfile(request, env)) return json(env, { chat: [], highlights: [], pastTrips: [], authenticated: false })
-  const [chat, highlights, pastTrips] = await Promise.all([
+  const [chat, highlights, pastTrips, pastParticipants, pastComments] = await Promise.all([
     env.DB.prepare(`SELECT m.id, m.profile_id, m.message, m.created_at, p.name, p.prefix, p.color
       FROM chat_messages m JOIN profiles p ON p.id = m.profile_id WHERE m.trip_id = ? ORDER BY m.created_at DESC LIMIT 100`).bind(TRIP_ID).all(),
     env.DB.prepare(`SELECT h.id, h.title, h.created_at, p.name, p.prefix
       FROM highlights h JOIN profiles p ON p.id = h.profile_id WHERE h.trip_id = ? ORDER BY h.created_at DESC LIMIT 100`).bind(TRIP_ID).all(),
     env.DB.prepare('SELECT id, title, destination, start_date, end_date, note FROM past_trips ORDER BY start_date DESC').all(),
+    env.DB.prepare(`SELECT pp.trip_id, pp.profile_id, p.name, p.prefix FROM past_trip_participants pp JOIN profiles p ON p.id = pp.profile_id`).all(),
+    env.DB.prepare(`SELECT c.id, c.trip_id, c.profile_id, c.comment, c.created_at, p.name, p.prefix FROM past_trip_comments c JOIN profiles p ON p.id = c.profile_id ORDER BY c.created_at`).all(),
   ])
   return json(env, {
     authenticated: true,
     chat: chat.results.map(item => ({ ...item, profileId: item.profile_id, author: `${item.prefix || ''}${item.name}` })),
     highlights: highlights.results.map(item => ({ ...item, author: `${item.prefix || ''}${item.name}`, imageUrl: `/highlights/${item.id}` })),
-    pastTrips: pastTrips.results,
+    pastTrips: pastTrips.results.map(item => ({ ...item, participants: pastParticipants.results.filter(entry => entry.trip_id === item.id).map(entry => ({ profileId: entry.profile_id, name: `${entry.prefix || ''}${entry.name}` })), comments: pastComments.results.filter(entry => entry.trip_id === item.id).map(entry => ({ id: entry.id, profileId: entry.profile_id, author: `${entry.prefix || ''}${entry.name}`, comment: entry.comment, createdAt: entry.created_at })) })),
   })
 }
 
@@ -555,13 +556,36 @@ async function highlightImage(pathname: string, env: Env) {
 }
 
 async function addPastTrip(request: Request, env: Env) {
-  const profile = await requireProfile(request, env, true)
-  if (!profile) return json(env, { error: 'Nur der Harte Kern darf Reisen archivieren.' }, 403)
+  const profile = await requireProfile(request, env)
+  if (!profile) return json(env, { error: 'Bitte zuerst anmelden.' }, 401)
   const data = await body(request)
   if (![data.title, data.destination, data.startDate, data.endDate].every(value => typeof value === 'string' && value.trim())) return json(env, { error: 'Bitte alle Reisedaten ausfüllen.' }, 400)
-  await env.DB.prepare('INSERT INTO past_trips (id, title, destination, start_date, end_date, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .bind(crypto.randomUUID(), String(data.title).slice(0, 100), String(data.destination).slice(0, 100), data.startDate, data.endDate, typeof data.note === 'string' ? data.note.slice(0, 1000) : '', profile.id).run()
+  const id = crypto.randomUUID()
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO past_trips (id, title, destination, start_date, end_date, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, String(data.title).slice(0, 100), String(data.destination).slice(0, 100), data.startDate, data.endDate, '', profile.id),
+    env.DB.prepare('INSERT INTO past_trip_participants (trip_id, profile_id) VALUES (?, ?)').bind(id, profile.id),
+  ])
   return json(env, { ok: true }, 201)
+}
+
+async function togglePastTripParticipant(pathname: string, request: Request, env: Env) {
+  const profile = await requireProfile(request, env)
+  if (!profile) return json(env, { error: 'Bitte zuerst anmelden.' }, 401)
+  const id = decodeURIComponent(pathname.split('/')[2] || '')
+  const existing = await env.DB.prepare('SELECT 1 FROM past_trip_participants WHERE trip_id = ? AND profile_id = ?').bind(id, profile.id).first()
+  if (existing) await env.DB.prepare('DELETE FROM past_trip_participants WHERE trip_id = ? AND profile_id = ?').bind(id, profile.id).run()
+  else await env.DB.prepare('INSERT INTO past_trip_participants (trip_id, profile_id) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM past_trips WHERE id = ?)').bind(id, profile.id, id).run()
+  return json(env, { joined: !existing })
+}
+
+async function addPastTripComment(pathname: string, request: Request, env: Env) {
+  const profile = await requireProfile(request, env)
+  if (!profile) return json(env, { error: 'Bitte zuerst anmelden.' }, 401)
+  const data = await body(request), comment = typeof data.comment === 'string' ? data.comment.trim().slice(0, 500) : ''
+  if (!comment) return json(env, { error: 'Der Kommentar ist leer.' }, 400)
+  const tripId = decodeURIComponent(pathname.split('/')[2] || ''), id = crypto.randomUUID()
+  await env.DB.prepare('INSERT INTO past_trip_comments (id, trip_id, profile_id, comment) SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM past_trips WHERE id = ?)').bind(id, tripId, profile.id, comment, tripId).run()
+  return json(env, { id }, 201)
 }
 
 export default {
@@ -597,6 +621,8 @@ export default {
       if (request.method === 'DELETE' && pathname.startsWith('/highlights/')) return deleteHighlight(pathname, request, env)
       if (request.method === 'GET' && pathname.startsWith('/highlights/')) return highlightImage(pathname, env)
       if (request.method === 'POST' && pathname === '/past-trips') return addPastTrip(request, env)
+      if (request.method === 'POST' && /^\/past-trips\/[^/]+\/participant$/.test(pathname)) return togglePastTripParticipant(pathname, request, env)
+      if (request.method === 'POST' && /^\/past-trips\/[^/]+\/comments$/.test(pathname)) return addPastTripComment(pathname, request, env)
       return json(env, { error: 'Nicht gefunden.' }, 404)
     } catch (error) {
       console.error(JSON.stringify({ event: 'request_failed', pathname, message: error instanceof Error ? error.message : 'unknown' }))

@@ -121,6 +121,26 @@ CREATE INDEX IF NOT EXISTS idx_chat_trip_created ON chat_messages(trip_id, creat
 CREATE INDEX IF NOT EXISTS idx_highlights_trip_created ON highlights(trip_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_past_trips_start ON past_trips(start_date);
 
+CREATE TABLE IF NOT EXISTS past_trip_participants (
+  trip_id TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  PRIMARY KEY (trip_id, profile_id),
+  FOREIGN KEY (trip_id) REFERENCES past_trips(id) ON DELETE CASCADE,
+  FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS past_trip_comments (
+  id TEXT PRIMARY KEY,
+  trip_id TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  comment TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (trip_id) REFERENCES past_trips(id) ON DELETE CASCADE,
+  FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_past_trip_comments ON past_trip_comments(trip_id, created_at);
+
 CREATE TABLE IF NOT EXISTS passkey_credentials (
   id TEXT PRIMARY KEY,
   profile_id TEXT NOT NULL,
