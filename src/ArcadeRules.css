@@ -1,0 +1,9 @@
+.arcade-rules-backdrop{position:fixed;inset:0;z-index:10;overflow-y:auto;display:grid;place-items:center;padding:20px;background:rgba(23,50,77,.72);backdrop-filter:blur(8px)}
+.arcade-rules{position:relative;width:min(100%,430px);padding:24px 28px 28px;border-radius:30px;background:#fff8ea;box-shadow:0 25px 80px rgba(0,0,0,.32);text-align:center}
+.arcade-rules img{width:115px;height:115px;object-fit:contain}
+.arcade-rules>p{margin:2px 0;color:#e25435;font-size:9px;font-weight:900;letter-spacing:.14em;text-transform:uppercase}
+.arcade-rules h2{margin:3px 0 15px;font-size:25px}
+.arcade-rules ul{display:grid;gap:9px;margin:0 0 20px;padding-left:22px;color:#405d70;font-size:11px;font-weight:700;line-height:1.45;text-align:left}
+.rules-ok{width:100%;padding:13px;border:0;border-radius:13px;color:#17324d;background:#ffc93c;font:inherit;font-size:11px;font-weight:900;cursor:pointer}
+.rules-close{position:absolute;top:13px;right:13px;width:34px;height:34px;border:0;border-radius:50%;color:#17324d;background:#edf2f4;font-size:21px;cursor:pointer}
+@media(max-width:650px){.arcade-rules{padding:18px 20px 22px}.arcade-rules img{width:95px;height:95px}}
