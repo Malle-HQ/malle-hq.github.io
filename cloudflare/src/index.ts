@@ -151,7 +151,7 @@ async function state(request: Request, env: Env) {
   const content = await readTrip(env)
   const profile = await currentProfile(request, env)
   const [profiles, achievements] = await Promise.all([
-    env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, flies FROM profiles WHERE trip_id = ? AND visible = 1 ORDER BY created_at').bind(TRIP_ID).all(),
+    env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, updated_at, flies FROM profiles WHERE trip_id = ? AND visible = 1 ORDER BY created_at').bind(TRIP_ID).all(),
     env.DB.prepare('SELECT a.id, a.profile_id, a.title, a.icon, a.created_at, giver.name AS giver_name, giver.prefix AS giver_prefix FROM achievements a JOIN profiles p ON p.id = a.profile_id LEFT JOIN profiles giver ON giver.id = a.awarded_by WHERE p.trip_id = ? ORDER BY a.created_at DESC').bind(TRIP_ID).all(),
   ])
   const participants = profiles.results.map(item => ({
@@ -161,13 +161,13 @@ async function state(request: Request, env: Env) {
     role: item.role,
     status: item.status,
     color: item.color,
-    avatarUrl: item.avatar_key ? `/avatars/${item.id}` : null,
+    avatarUrl: item.avatar_key ? `/avatars/${item.id}?v=${encodeURIComponent(String(item.updated_at || ''))}` : null,
     flies: Boolean(item.flies),
-    achievements: achievements.results.filter(badge => badge.profile_id === item.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon, awardedBy: `${badge.giver_prefix || ''}${badge.giver_name || 'Bierbert'}`, createdAt: badge.created_at })),
+    achievements: achievements.results.filter(badge => badge.profile_id === item.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon, awardedBy: String(badge.title).startsWith('Säulen-Champion') ? 'Bierbert' : `${badge.giver_prefix || ''}${badge.giver_name || 'Bierbert'}`, createdAt: badge.created_at })),
   }))
   const owner = await env.DB.prepare("SELECT password_hash FROM profiles WHERE id = 'owner'").first<{ password_hash: string | null }>()
-  const myAchievements = profile ? achievements.results.filter(badge => badge.profile_id === profile.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon, awardedBy: `${badge.giver_prefix || ''}${badge.giver_name || 'Bierbert'}`, createdAt: badge.created_at })) : []
-  const accountProfiles = profile?.role === 'Harter Kern' ? (await env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, visible, flies FROM profiles WHERE trip_id = ? ORDER BY name').bind(TRIP_ID).all()).results.map(item => ({ id: item.id, name: `${item.prefix || ''}${item.name}`, nickname: item.nickname, role: item.role, status: item.status, color: item.color, avatarUrl: item.avatar_key ? `/image/${item.avatar_key}` : null, visible: Boolean(item.visible), flies: Boolean(item.flies), achievements: achievements.results.filter(badge => badge.profile_id === item.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon, awardedBy: `${badge.giver_prefix || ''}${badge.giver_name || 'Bierbert'}`, createdAt: badge.created_at })) })) : []
+  const myAchievements = profile ? achievements.results.filter(badge => badge.profile_id === profile.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon, awardedBy: String(badge.title).startsWith('Säulen-Champion') ? 'Bierbert' : `${badge.giver_prefix || ''}${badge.giver_name || 'Bierbert'}`, createdAt: badge.created_at })) : []
+  const accountProfiles = profile?.role === 'Harter Kern' ? (await env.DB.prepare('SELECT id, name, prefix, nickname, role, status, color, avatar_key, updated_at, visible, flies FROM profiles WHERE trip_id = ? ORDER BY name').bind(TRIP_ID).all()).results.map(item => ({ id: item.id, name: `${item.prefix || ''}${item.name}`, nickname: item.nickname, role: item.role, status: item.status, color: item.color, avatarUrl: item.avatar_key ? `/avatars/${item.id}?v=${encodeURIComponent(String(item.updated_at || ''))}` : null, visible: Boolean(item.visible), flies: Boolean(item.flies), achievements: achievements.results.filter(badge => badge.profile_id === item.id).map(badge => ({ id: badge.id, title: badge.title, icon: badge.icon, awardedBy: String(badge.title).startsWith('Säulen-Champion') ? 'Bierbert' : `${badge.giver_prefix || ''}${badge.giver_name || 'Bierbert'}`, createdAt: badge.created_at })) })) : []
   const invitations = profile?.role === 'Harter Kern' ? (await env.DB.prepare('SELECT id, recipient, role, used_at, revoked_at, created_at FROM invitations WHERE trip_id = ? ORDER BY created_at DESC').bind(TRIP_ID).all()).results.map(item => ({ id: item.id, recipient: item.recipient, role: item.role, used: Boolean(item.used_at), failed: Boolean(item.revoked_at), createdAt: item.created_at })) : []
   return json(env, { content, participants, profile, myAchievements, accountProfiles, invitations, isAdmin: profile?.role === 'Harter Kern', setupRequired: !owner?.password_hash })
 }
@@ -588,6 +588,36 @@ async function addPastTripComment(pathname: string, request: Request, env: Env) 
   return json(env, { id }, 201)
 }
 
+async function gameLeaderboard(request: Request, env: Env) {
+  if (!await requireProfile(request, env)) return json(env, { error: 'Bitte zuerst anmelden.' }, 401)
+  const scores = await env.DB.prepare(`SELECT g.profile_id, g.score, g.look, p.name, p.prefix, p.avatar_key, p.updated_at FROM game_scores g JOIN profiles p ON p.id = g.profile_id WHERE p.trip_id = ? ORDER BY g.score DESC, g.updated_at ASC LIMIT 25`).bind(TRIP_ID).all()
+  return json(env, { leaderboard: scores.results.map(item => ({ profileId: item.profile_id, name: `${item.prefix || ''}${item.name}`, avatarUrl: item.avatar_key ? `/avatars/${item.profile_id}?v=${encodeURIComponent(String(item.updated_at || ''))}` : null, score: Number(item.score), look: JSON.parse(String(item.look || '{}')) })) })
+}
+
+async function saveGameScore(request: Request, env: Env) {
+  const profile = await requireProfile(request, env)
+  if (!profile) return json(env, { error: 'Bitte zuerst anmelden.' }, 401)
+  const data = await body(request), score = Math.max(0, Math.min(1_000_000, Math.floor(Number(data.score))))
+  if (!Number.isFinite(score)) return json(env, { error: 'Der Spielstand ist ungültig.' }, 400)
+  const look = JSON.stringify(typeof data.look === 'object' && data.look ? data.look : {}).slice(0, 1000)
+  const previous = await env.DB.prepare('SELECT score FROM game_scores WHERE profile_id = ?').bind(profile.id).first<{ score: number }>()
+  if (!previous || score > previous.score) await env.DB.prepare(`INSERT INTO game_scores (profile_id, score, look) VALUES (?, ?, ?) ON CONFLICT(profile_id) DO UPDATE SET score = excluded.score, look = excluded.look, updated_at = CURRENT_TIMESTAMP`).bind(profile.id, score, look).run()
+  const leader = await env.DB.prepare('SELECT profile_id, score FROM game_scores ORDER BY score DESC, updated_at ASC LIMIT 1').first<{ profile_id: string; score: number }>()
+  if (leader?.profile_id === profile.id && (!previous || score > previous.score)) {
+    const trophy = await env.DB.prepare("SELECT id, profile_id FROM achievements WHERE title LIKE 'Säulen-Champion · %' LIMIT 1").first<{ id: string; profile_id: string }>()
+    const title = `Säulen-Champion · ${leader.score} Punkte`
+    if (trophy?.profile_id === profile.id) await env.DB.prepare('UPDATE achievements SET title = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?').bind(title, trophy.id).run()
+    else {
+      const giver = await env.DB.prepare("SELECT id FROM profiles WHERE trip_id = ? AND (id = 'owner' OR role = 'Harter Kern') ORDER BY CASE WHEN id = 'owner' THEN 0 ELSE 1 END LIMIT 1").bind(TRIP_ID).first<{ id: string }>()
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM achievements WHERE title LIKE 'Säulen-Champion · %'"),
+        env.DB.prepare('INSERT INTO achievements (id, profile_id, title, icon, awarded_by) VALUES (?, ?, ?, ?, ?)').bind(crypto.randomUUID(), profile.id, title, '🏆', giver?.id || profile.id),
+      ])
+    }
+  }
+  return gameLeaderboard(request, env)
+}
+
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(env) })
@@ -623,6 +653,8 @@ export default {
       if (request.method === 'POST' && pathname === '/past-trips') return addPastTrip(request, env)
       if (request.method === 'POST' && /^\/past-trips\/[^/]+\/participant$/.test(pathname)) return togglePastTripParticipant(pathname, request, env)
       if (request.method === 'POST' && /^\/past-trips\/[^/]+\/comments$/.test(pathname)) return addPastTripComment(pathname, request, env)
+      if (request.method === 'GET' && pathname === '/game/leaderboard') return gameLeaderboard(request, env)
+      if (request.method === 'POST' && pathname === '/game/score') return saveGameScore(request, env)
       return json(env, { error: 'Nicht gefunden.' }, 404)
     } catch (error) {
       console.error(JSON.stringify({ event: 'request_failed', pathname, message: error instanceof Error ? error.message : 'unknown' }))

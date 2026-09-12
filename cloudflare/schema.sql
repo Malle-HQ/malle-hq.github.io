@@ -141,6 +141,16 @@ CREATE TABLE IF NOT EXISTS past_trip_comments (
 
 CREATE INDEX IF NOT EXISTS idx_past_trip_comments ON past_trip_comments(trip_id, created_at);
 
+CREATE TABLE IF NOT EXISTS game_scores (
+  profile_id TEXT PRIMARY KEY,
+  score INTEGER NOT NULL DEFAULT 0,
+  look TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_game_scores_score ON game_scores(score DESC, updated_at ASC);
+
 CREATE TABLE IF NOT EXISTS passkey_credentials (
   id TEXT PRIMARY KEY,
   profile_id TEXT NOT NULL,
