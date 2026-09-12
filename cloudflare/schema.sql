@@ -151,6 +151,15 @@ CREATE TABLE IF NOT EXISTS game_scores (
 
 CREATE INDEX IF NOT EXISTS idx_game_scores_score ON game_scores(score DESC, updated_at ASC);
 
+CREATE TABLE IF NOT EXISTS snake_scores (
+  profile_id TEXT PRIMARY KEY,
+  score INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_snake_scores_score ON snake_scores(score DESC, updated_at ASC);
+
 CREATE TABLE IF NOT EXISTS passkey_credentials (
   id TEXT PRIMARY KEY,
   profile_id TEXT NOT NULL,

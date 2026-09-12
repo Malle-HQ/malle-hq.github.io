@@ -6,4 +6,5 @@
 .arcade-rules ul{display:grid;gap:9px;margin:0 0 20px;padding-left:22px;color:#405d70;font-size:11px;font-weight:700;line-height:1.45;text-align:left}
 .rules-ok{width:100%;padding:13px;border:0;border-radius:13px;color:#17324d;background:#ffc93c;font:inherit;font-size:11px;font-weight:900;cursor:pointer}
 .rules-close{position:absolute;top:13px;right:13px;width:34px;height:34px;border:0;border-radius:50%;color:#17324d;background:#edf2f4;font-size:21px;cursor:pointer}
+.rules-reopen-row{display:flex;justify-content:center;flex-wrap:wrap;gap:9px;max-width:850px;margin:-14px auto 18px}.rules-reopen-row button{padding:10px 13px;border:2px solid rgba(23,50,77,.14);border-radius:12px;color:#17324d;background:rgba(255,255,255,.7);font:inherit;font-size:9px;font-weight:900;cursor:pointer}
 @media(max-width:650px){.arcade-rules{padding:18px 20px 22px}.arcade-rules img{width:95px;height:95px}}

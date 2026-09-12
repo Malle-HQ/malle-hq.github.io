@@ -7,6 +7,7 @@ import PixelGame from './PixelGame'
 import type { GameLook, GameScore } from './PixelGame'
 import ArcadeHub from './ArcadeHub'
 import DrunkSnake from './DrunkSnake'
+import type { SnakeScore } from './DrunkSnake'
 import './App.css'
 import './Profiles.css'
 
@@ -110,12 +111,13 @@ function App() {
   const [ownAchievements, setOwnAchievements] = useState<Achievement[]>([])
   const [invitesExpanded, setInvitesExpanded] = useState(false), [appInstalled, setAppInstalled] = useState(() => window.matchMedia('(display-mode: standalone)').matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone))
   const [avatarPreview, setAvatarPreview] = useState(''), [avatarFocusX, setAvatarFocusX] = useState(50), [avatarFocusY, setAvatarFocusY] = useState(50)
-  const [gameScores, setGameScores] = useState<GameScore[]>([])
+  const [gameScores, setGameScores] = useState<GameScore[]>([]), [snakeScores, setSnakeScores] = useState<SnakeScore[]>([])
   const setSelectedDetail = (detail: DetailKey | 'planning' | 'live' | 'chat' | 'highlights' | 'archive' | 'profiles' | 'arcade' | 'game' | 'snake' | null) => { if (detail === 'travel') setFlightDraft(trip.flightPlan || defaults.flightPlan); setSelectedDetailState(detail) }
   useEffect(() => { const timer = setInterval(() => setCountdown(getCountdown(trip.startDate)), 1000); return () => clearInterval(timer) }, [trip.startDate])
   useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(trip)) }, [trip])
   const loadExtras = async () => { if (!API_BASE) return; try { const data = await api('/extras'); setChatMessages(data.chat || []); setHighlights(data.highlights || []); setPastTrips(data.pastTrips || []); setExtrasAuthenticated(Boolean(data.authenticated)) } catch { setExtrasAuthenticated(false) } }
   const loadGame = async () => { if (!profileId) return; try { const data = await api('/game/leaderboard'); setGameScores(data.leaderboard || []) } catch { setGameScores([]) } }
+  const loadSnake = async () => { if (!profileId) return; try { const data = await api('/snake/leaderboard'); setSnakeScores(data.leaderboard || []) } catch { setSnakeScores([]) } }
   useEffect(() => { initializePush(setPushEnabled); if (!API_BASE) return; api('/state').then(data => { if (data.content) setTrip(current => ({ ...current, ...data.content, participants: data.participants || [], invitations: mergeInvitations(data.invitations || [], current.invitations), myProfile: data.profile ? mapUserProfile(data.profile) : current.myProfile })); setProfileId(data.profile?.id || ''); setOwnAchievements(data.myAchievements || []); setAdmin(Boolean(data.isAdmin)); setAccountProfiles(data.accountProfiles || []); setSetupRequired(Boolean(data.setupRequired)); void loadExtras() }).catch(() => setError('Cloud-Verbindung gerade nicht erreichbar.')) }, [])
   useEffect(() => { if (profileId) identifyPushUser(profileId) }, [profileId])
   useEffect(() => { if (!extrasAuthenticated) return; const timer = window.setInterval(() => void loadExtras(), 20_000); return () => window.clearInterval(timer) }, [extrasAuthenticated])
@@ -183,10 +185,11 @@ function App() {
   const changeFlight = (leg: 'outbound' | 'return', field: keyof FlightLeg, value: string) => { setTravelSaved(false); setFlightDraft(current => ({ ...current, [leg]: { ...current[leg], [field]: value } })) }
   const saveFlightPlan = async () => { const startDate = `${flightDraft.outbound.date}T${flightDraft.outbound.time || '00:00'}`, endDate = `${flightDraft.return.date}T${flightDraft.return.time || '00:00'}`; const next = { ...trip, flightPlan: flightDraft, startDate, endDate, travel: flightDraft.outbound.date ? `Hinflug am ${formatDate(startDate, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })} Uhr${flightDraft.outbound.airport ? ` ab ${flightDraft.outbound.airport}` : ''}` : trip.travel }; setTrip(next); await saveCloud(next); setTravelSaved(true) }
   const saveGameHighscore = async (score: number, look: GameLook) => { const data = await api('/game/score', { method: 'POST', body: JSON.stringify({ score, look }) }); setGameScores(data.leaderboard || []); const fresh = await api('/state'); setOwnAchievements(fresh.myAchievements || []); setTrip(current => ({ ...current, participants: fresh.participants || current.participants })) }
+  const saveSnakeHighscore = async (score: number) => { const data = await api('/snake/score', { method: 'POST', body: JSON.stringify({ score }) }); setSnakeScores(data.leaderboard || []) }
 
-  if (selectedDetail === 'arcade') return <ArcadeHub onBack={() => setSelectedDetail(null)} onPixelGame={() => { setSelectedDetail('game'); void loadGame() }} onSnake={() => setSelectedDetail('snake')} />
+  if (selectedDetail === 'arcade') return <ArcadeHub onBack={() => setSelectedDetail(null)} onPixelGame={() => { setSelectedDetail('game'); void loadGame() }} onSnake={() => { setSelectedDetail('snake'); void loadSnake() }} />
   if (selectedDetail === 'game') return <PixelGame leaderboard={gameScores} loggedIn={Boolean(profileId)} onBack={() => setSelectedDetail('arcade')} onScore={saveGameHighscore} />
-  if (selectedDetail === 'snake') return <DrunkSnake onBack={() => setSelectedDetail('arcade')} />
+  if (selectedDetail === 'snake') return <DrunkSnake leaderboard={snakeScores} onBack={() => setSelectedDetail('arcade')} onScore={saveSnakeHighscore} />
 
   if (selectedDetail === 'live') return <main className="app-shell detail-page live-page">
     <header className="topbar"><button className="back-button" onClick={() => setSelectedDetail(null)}>← <span>Zurück</span></button><span className="brand"><span className="brand-mark">MHQ</span><span>Malle HQ</span></span></header>

@@ -618,6 +618,21 @@ async function saveGameScore(request: Request, env: Env) {
   return gameLeaderboard(request, env)
 }
 
+async function snakeLeaderboard(request: Request, env: Env) {
+  if (!await requireProfile(request, env)) return json(env, { error: 'Bitte zuerst anmelden.' }, 401)
+  const scores = await env.DB.prepare(`SELECT s.profile_id, s.score, p.name, p.prefix, p.avatar_key, p.updated_at FROM snake_scores s JOIN profiles p ON p.id = s.profile_id WHERE p.trip_id = ? ORDER BY s.score DESC, s.updated_at ASC LIMIT 25`).bind(TRIP_ID).all()
+  return json(env, { leaderboard: scores.results.map(item => ({ profileId: item.profile_id, name: `${item.prefix || ''}${item.name}`, avatarUrl: item.avatar_key ? `/avatars/${item.profile_id}?v=${encodeURIComponent(String(item.updated_at || ''))}` : null, score: Number(item.score) })) })
+}
+
+async function saveSnakeScore(request: Request, env: Env) {
+  const profile = await requireProfile(request, env)
+  if (!profile) return json(env, { error: 'Bitte zuerst anmelden.' }, 401)
+  const data = await body(request), score = Math.max(0, Math.min(1_000_000, Math.floor(Number(data.score))))
+  if (!Number.isFinite(score)) return json(env, { error: 'Der Spielstand ist ungültig.' }, 400)
+  await env.DB.prepare(`INSERT INTO snake_scores (profile_id, score) VALUES (?, ?) ON CONFLICT(profile_id) DO UPDATE SET score = MAX(score, excluded.score), updated_at = CASE WHEN excluded.score > score THEN CURRENT_TIMESTAMP ELSE updated_at END`).bind(profile.id, score).run()
+  return snakeLeaderboard(request, env)
+}
+
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(env) })
@@ -655,6 +670,8 @@ export default {
       if (request.method === 'POST' && /^\/past-trips\/[^/]+\/comments$/.test(pathname)) return addPastTripComment(pathname, request, env)
       if (request.method === 'GET' && pathname === '/game/leaderboard') return gameLeaderboard(request, env)
       if (request.method === 'POST' && pathname === '/game/score') return saveGameScore(request, env)
+      if (request.method === 'GET' && pathname === '/snake/leaderboard') return snakeLeaderboard(request, env)
+      if (request.method === 'POST' && pathname === '/snake/score') return saveSnakeScore(request, env)
       return json(env, { error: 'Nicht gefunden.' }, 404)
     } catch (error) {
       console.error(JSON.stringify({ event: 'request_failed', pathname, message: error instanceof Error ? error.message : 'unknown' }))
