@@ -6,7 +6,7 @@ export type GameScore = { profileId: string; name: string; avatarUrl?: string | 
 type Falling = { x: number; y: number; speed: number; icon: string; kind: 'good' | 'bad' | 'bomb' }
 
 const choices = {
-  hat: [['none', 'Keiner'], ['sombrero', 'Mexico-Hut']],
+  hat: [['none', 'Keiner'], ['sombrero', 'Mexico-Hut'], ['cap', 'Cap'], ['beerhelmet', 'Bierhelm'], ['goggles', 'Taucherbrille']],
   top: [['shirt', 'T-Shirt'], ['floral', 'Malle-Hemd']],
   bottoms: [['shorts', 'Shorts'], ['trunks', 'Badehose']],
   shoes: [['sandals', 'Sandalen'], ['barefoot', 'Barfuß']],
@@ -21,9 +21,12 @@ function drawPixelPerson(context: CanvasRenderingContext2D, x: number, y: number
   const hair = { brown: '#654126', black: '#202834', blond: '#e7bd45', red: '#b9512d' }[look.hair] || '#654126'
   context.save(); context.translate(Math.round(x), Math.round(y)); context.imageSmoothingEnabled = false
   if (look.hat === 'sombrero') { context.fillStyle = '#f0b936'; context.fillRect(-27, -49, 54, 7); context.fillStyle = '#d98224'; context.fillRect(-17, -57, 34, 9); context.fillRect(-10, -64, 20, 8) }
+  if (look.hat === 'cap') { context.fillStyle = '#d9578e'; context.fillRect(-14, -54, 27, 12); context.fillRect(-19, -43, 38, 6); context.fillStyle = '#fff'; context.fillRect(-5, -51, 9, 5) }
+  if (look.hat === 'beerhelmet') { context.fillStyle = '#ff6b35'; context.fillRect(-16, -56, 32, 15); context.fillStyle = '#ffc93c'; context.fillRect(-25, -58, 9, 22); context.fillRect(17, -58, 9, 22); context.fillStyle = '#fff'; context.fillRect(-23, -54, 5, 8); context.fillRect(19, -54, 5, 8); context.strokeStyle = '#168aad'; context.lineWidth = 3; context.beginPath(); context.moveTo(-20, -37); context.lineTo(-8, -22); context.moveTo(21, -37); context.lineTo(8, -22); context.stroke() }
   context.fillStyle = hair; context.fillRect(-14, -45, 28, 8); context.fillRect(-18, -39, 7, 15)
   context.fillStyle = '#efb38d'; context.fillRect(-13, -37, 26, 25)
-  if (look.glasses) { context.fillStyle = '#172b3d'; context.fillRect(-12, -32, 10, 7); context.fillRect(3, -32, 10, 7); context.fillRect(-2, -30, 5, 2) }
+  if (look.hat === 'goggles') { context.fillStyle = '#168aad'; context.fillRect(-16, -34, 32, 13); context.fillStyle = '#bdefff'; context.fillRect(-12, -31, 10, 7); context.fillRect(3, -31, 10, 7); context.fillStyle = '#ff6b35'; context.fillRect(14, -29, 5, 31); context.fillRect(18, -29, 8, 5) }
+  else if (look.glasses) { context.fillStyle = '#172b3d'; context.fillRect(-12, -32, 10, 7); context.fillRect(3, -32, 10, 7); context.fillRect(-2, -30, 5, 2) }
   context.fillStyle = look.top === 'floral' ? '#ff6b35' : '#168aad'; context.fillRect(-18, -12, 36, 32)
   if (look.top === 'floral') { context.fillStyle = '#ffe36e'; context.fillRect(-12, -5, 5, 5); context.fillRect(7, 7, 5, 5) }
   context.fillStyle = look.bottoms === 'trunks' ? '#8f5bd7' : '#17324d'; context.fillRect(-17, 20, 34, 17); context.fillStyle = '#efb38d'; context.fillRect(-15, 37, 11, 19); context.fillRect(4, 37, 11, 19)
